@@ -3,17 +3,24 @@ services:
     image: traefik:v2.10
     container_name: transcribo-secure-traefik
     command:
-      - "--api.insecure=true"  # Enable dashboard - change in production
+      - "--api.insecure=true"  # Only for development, remove in production
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      # - "--certificatesresolvers.myresolver.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"  # Staging for testing
+      - "--certificatesresolvers.myresolver.acme.email=your@email.com"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
     ports:
       - "80:80"     # HTTP
       - "443:443"   # HTTPS
       - "8080:8080" # Dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
     networks:
       - transcribo-secure-network
 
@@ -43,12 +50,18 @@ services:
       - transcribo-secure-network
     labels:
       - "traefik.enable=true"
+      # API
       - "traefik.http.routers.minio-api.rule=Host(`minio-api.localhost`)"
-      - "traefik.http.routers.minio-api.service=minio-api"
-      - "traefik.http.services.minio-api.loadbalancer.server.port=9000"
+      - "traefik.http.routers.minio-api.service=minio-api-service"
+      - "traefik.http.services.minio-api-service.loadbalancer.server.port=9000"
+      - "traefik.http.routers.minio-api.entrypoints=websecure"
+      - "traefik.http.routers.minio-api.tls=true"
+      # Console
       - "traefik.http.routers.minio-console.rule=Host(`minio-console.localhost`)"
-      - "traefik.http.routers.minio-console.service=minio-console"
-      - "traefik.http.services.minio-console.loadbalancer.server.port=9001"
+      - "traefik.http.routers.minio-console.service=minio-console-service"
+      - "traefik.http.services.minio-console-service.loadbalancer.server.port=9001"
+      - "traefik.http.routers.minio-console.entrypoints=websecure"
+      - "traefik.http.routers.minio-console.tls=true"
 
   storage-api:
     build:
@@ -57,7 +70,16 @@ services:
     container_name: transcribo-secure-api
     environment:
       - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=transcribo
+      - POSTGRES_USER=transcribo_user
+      - POSTGRES_PASSWORD=your_secure_password
       - MINIO_HOST=minio
+      - MINIO_PORT=9000
+      - MINIO_ACCESS_KEY=minio_user
+      - MINIO_SECRET_KEY=your_secure_password
+    env_file:
+      - ../../api/.env
     depends_on:
       - postgres
       - minio
@@ -67,8 +89,10 @@ services:
       - ../../api:/app
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.storage-api.rule=Host(`api.localhost`)"
-      - "traefik.http.services.storage-api.loadbalancer.server.port=8080"
+      - "traefik.http.routers.api.rule=Host(`api.localhost`)"
+      - "traefik.http.routers.api.entrypoints=websecure"
+      - "traefik.http.routers.api.tls=true"
+      - "traefik.http.services.api.loadbalancer.server.port=8080"
 
 networks:
   transcribo-secure-network:
