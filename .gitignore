@@ -1,0 +1,16 @@
+# Environment
+.env
+.venv
+__pycache__/
+*.pyc
+
+# Data directories
+infrastructure/docker/.postgres/data/
+infrastructure/docker/.minio/data/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log

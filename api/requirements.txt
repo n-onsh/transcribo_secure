@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart
+psycopg2-binary
+minio
+azure-keyvault-secrets
+azure-identity
+python-dotenv
+httpx

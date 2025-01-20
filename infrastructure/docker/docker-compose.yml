@@ -1,0 +1,75 @@
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: transcribo-secure-traefik
+    command:
+      - "--api.insecure=true"  # Enable dashboard - change in production
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+    ports:
+      - "80:80"     # HTTP
+      - "443:443"   # HTTPS
+      - "8080:8080" # Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - transcribo-secure-network
+
+  postgres:
+    image: postgres:15
+    container_name: transcribo-secure-postgres
+    environment:
+      POSTGRES_DB: transcribo
+      POSTGRES_USER: transcribo_user
+      POSTGRES_PASSWORD: your_secure_password
+    volumes:
+      - ./.postgres/data:/var/lib/postgresql/data
+      - ./.postgres/init:/docker-entrypoint-initdb.d
+    networks:
+      - transcribo-secure-network
+
+  minio:
+    image: minio/minio
+    container_name: transcribo-secure-minio
+    command: server --console-address ":9001" /data
+    environment:
+      MINIO_ROOT_USER: minio_user
+      MINIO_ROOT_PASSWORD: your_secure_password
+    volumes:
+      - ./.minio/data:/data
+    networks:
+      - transcribo-secure-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.minio-api.rule=Host(`minio-api.localhost`)"
+      - "traefik.http.routers.minio-api.service=minio-api"
+      - "traefik.http.services.minio-api.loadbalancer.server.port=9000"
+      - "traefik.http.routers.minio-console.rule=Host(`minio-console.localhost`)"
+      - "traefik.http.routers.minio-console.service=minio-console"
+      - "traefik.http.services.minio-console.loadbalancer.server.port=9001"
+
+  storage-api:
+    build:
+      context: ../../api
+      dockerfile: ../infrastructure/docker/api.dockerfile
+    container_name: transcribo-secure-api
+    environment:
+      - POSTGRES_HOST=postgres
+      - MINIO_HOST=minio
+    depends_on:
+      - postgres
+      - minio
+    networks:
+      - transcribo-secure-network
+    volumes:
+      - ../../api:/app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.storage-api.rule=Host(`api.localhost`)"
+      - "traefik.http.services.storage-api.loadbalancer.server.port=8080"
+
+networks:
+  transcribo-secure-network:
+    name: transcribo-secure-network
