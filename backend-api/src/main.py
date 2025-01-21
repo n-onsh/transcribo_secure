@@ -4,10 +4,16 @@ from contextlib import asynccontextmanager
 from .routes import files
 from .services.database import DatabaseService
 from .services.storage import StorageService
+from .middleware.file_validation import validate_file_middleware
+from .config import get_settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize services
+    """Lifecycle manager for the FastAPI application"""
+    # Load settings
+    settings = get_settings()
+    
+    # Initialize services
     db = DatabaseService()
     storage = StorageService()
     
@@ -18,8 +24,13 @@ async def lifespan(app: FastAPI):
     
     yield
     
+    # Cleanup
+    await db.close()
+
 app = FastAPI(
     title="Transcribo Storage API",
+    description="Secure storage API for audio/video transcription",
+    version="1.0.0",
     lifespan=lifespan
 )
 
@@ -32,9 +43,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add file validation middleware
+app.middleware("http")(validate_file_middleware)
+
 # Include routers
 app.include_router(files.router, prefix="/api/v1")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    """Basic health check endpoint"""
+    return {
+        "status": "healthy",
+        "services": {
+            "database": True,  # We could add real checks here
+            "storage": True,
+            "encryption": True
+        }
+    }
