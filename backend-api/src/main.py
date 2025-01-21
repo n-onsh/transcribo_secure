@@ -6,6 +6,7 @@ from .routes import files, jobs
 from .services.database import DatabaseService
 from .services.storage import StorageService
 from .services.cleanup import CleanupService
+from .routes import transcriber
 from .middleware.file_validation import validate_file_middleware
 from .config import get_settings
 from .utils.logging import setup_logging, LogContext, get_logger
@@ -130,6 +131,7 @@ app.middleware("http")(validate_file_middleware)
 # Include routers
 app.include_router(files.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(transcriber.router, prefix="/api/v1/transcriber")
 
 @app.get("/health")
 async def health_check():

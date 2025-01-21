@@ -7,7 +7,7 @@ from pathlib import Path
 import os
 from typing import Optional
 import json
-from pydantic_settings import BaseSettings
+from pydantic import BaseSettings
 import tempfile
 
 # Configure logging
