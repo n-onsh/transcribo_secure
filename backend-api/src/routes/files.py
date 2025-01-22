@@ -17,44 +17,43 @@ async def get_services():
     finally:
         await db.close()  # Close database connection when done
 
-@router.post("/files/", response_model=FileMetadata)
+@router.post("/files/")
 async def upload_file(
     file: UploadFile = File(...),
+    vocabulary: Optional[List[str]] = None,
     user_id: str = "test_user",  # We'll implement proper auth later
     services: dict = Depends(get_services)
 ):
     """
-    Upload a file with encryption:
-    1. Generate unique file ID
-    2. Store encrypted file in MinIO
-    3. Store metadata in PostgreSQL
-    4. Return file metadata to client
+    Upload a file and create a transcription job
     """
-    file_id = uuid4()
     try:
-        # Store encrypted file
-        size = await services["storage"].store_file(
-            file_id=file_id,
+        # Store file
+        file_metadata = await services["storage"].store_file(
+            file_id=uuid4(),
             file_data=file.file,
             file_name=file.filename,
             file_type='input'
         )
         
-        # Create metadata record
-        metadata = FileMetadata(
-            file_id=file_id,
-            user_id=user_id,
-            file_name=file.filename,
-            file_type="input",
-            created_at=datetime.utcnow(),
-            size_bytes=size,
-            content_type=file.content_type
+        # Create transcription options
+        options = TranscriptionOptions(
+            vocabulary=vocabulary,
+            generate_srt=True
         )
         
-        # Store in database
-        await services["db"].create_file(metadata)
+        # Create transcription job
+        job = await services["job_processor"].create_transcription_job(
+            file_id=file_metadata.file_id,
+            user_id=user_id,
+            file_name=file.filename,
+            options=options
+        )
         
-        return metadata
+        return {
+            "file": file_metadata,
+            "job": job
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
