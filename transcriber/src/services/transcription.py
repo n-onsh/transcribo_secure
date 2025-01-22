@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 import os
 import asyncio
+import zipfile
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,9 @@ from uuid import uuid4
 from ..services.database import DatabaseService
 from ..services.storage import StorageService
 from ..models.file import FileMetadata
+from ..models.job import TranscriptionOptions
 from datetime import datetime
+from typing import Optional, List
 
 router = APIRouter()
 
