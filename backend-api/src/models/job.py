@@ -1,6 +1,7 @@
 from datetime import datetime
 from pydantic import BaseModel, UUID4
 from typing import Optional, Dict, List
+from enum import Enum
 
 class JobStatus(str, Enum):
     PENDING = "pending"

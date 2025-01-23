@@ -36,6 +36,11 @@ services:
       - "./infrastructure/docker/.postgres/data:/var/lib/postgresql/data"
     networks:
       - transcribo-secure-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5    
 
   minio:
     image: minio/minio
@@ -184,6 +189,9 @@ services:
     volumes:
       - "grafana_data:/var/lib/grafana"
       - "./infrastructure/docker/grafana/provisioning:/etc/grafana/provisioning"
+      - "./infrastructure/docker/grafana/provisioning/plugins:/etc/grafana/provisioning/plugins"
+      - "./infrastructure/docker/grafana/provisioning/notifiers:/etc/grafana/provisioning/notifiers"
+      - "./infrastructure/docker/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting"
     networks:
       - transcribo-secure-network
     depends_on:

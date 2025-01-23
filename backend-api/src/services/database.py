@@ -1,20 +1,39 @@
 import os
+import time
 import psycopg2
+import logging
 from psycopg2.extras import RealDictCursor
 from ..models.file import FileMetadata
 from pydantic import UUID4
 from typing import Optional
 from ..models.job import Job, JobStatus, JobUpdate
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 class DatabaseService:
-    def __init__(self):
-        self.conn = psycopg2.connect(
-            dbname=os.getenv("POSTGRES_DB"),
-            user=os.getenv("POSTGRES_USER"),
-            password=os.getenv("POSTGRES_PASSWORD"),
-            host=os.getenv("POSTGRES_HOST"),
-            port=os.getenv("POSTGRES_PORT", "5432")
-        )
+    def __init__(self, max_retries: int = 5, retry_delay: int = 5):
+        self.conn: Optional[psycopg2.extensions.connection] = None
+        self._connect_with_retries(max_retries, retry_delay)
+
+    def _connect_with_retries(self, max_retries: int, retry_delay: int):
+        """Attempt to connect to database with retries"""
+        for attempt in range(max_retries):
+            try:
+                self.conn = psycopg2.connect(
+                    dbname=os.getenv("POSTGRES_DB"),
+                    user=os.getenv("POSTGRES_USER"),
+                    password=os.getenv("POSTGRES_PASSWORD"),
+                    host=os.getenv("POSTGRES_HOST"),
+                    port=os.getenv("POSTGRES_PORT", "5432")
+                )
+                logger.info("Successfully connected to database")
+                return
+            except psycopg2.OperationalError as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to connect to database after {max_retries} attempts")
+                    raise
+                logger.warning(f"Database connection attempt {attempt + 1} failed. Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
 
     async def close(self):
         """Close the database connection"""
