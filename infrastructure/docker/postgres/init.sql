@@ -1,0 +1,3 @@
+CREATE DATABASE transcribo;
+CREATE USER transcribo_user WITH PASSWORD '${POSTGRES_PASSWORD}';
+GRANT ALL PRIVILEGES ON DATABASE transcribo TO transcribo_user;

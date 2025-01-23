@@ -2,7 +2,7 @@ name: transcribo
 
 services:
   traefik:
-    image: traefik:v2.10
+    image: traefik:v2.11.0
     container_name: transcribo-secure-traefik
     command:
       - "--api.insecure=true"  # Only for development
@@ -29,18 +29,19 @@ services:
     image: postgres:15
     container_name: transcribo-secure-postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: transcribo
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - "./infrastructure/docker/.postgres/data:/var/lib/postgresql/data"
+      - "./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql"
     networks:
       - transcribo-secure-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
-      retries: 5    
+      retries: 5
 
   minio:
     image: minio/minio
@@ -160,7 +161,7 @@ services:
       - ".env"
 
   prometheus:
-    image: prom/prometheus:v2.45.0
+    image: prom/prometheus:v2.48.1
     container_name: transcribo-secure-prometheus
     volumes:
       - "./infrastructure/docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml"
@@ -180,7 +181,7 @@ services:
       - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
 
   grafana:
-    image: grafana/grafana:10.0.3
+    image: grafana/grafana:10.3.0
     container_name: transcribo-secure-grafana
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
