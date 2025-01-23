@@ -6,7 +6,7 @@ shift
 cmd="$@"
 
 # Wait for postgres to be ready
-until PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -U transcribo_user -d transcribo -c '\q'; do
+until PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c '\q'; do
   >&2 echo "Postgres is unavailable - sleeping"
   sleep 1
 done

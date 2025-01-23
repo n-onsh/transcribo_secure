@@ -1,14 +1,26 @@
--- Create application user
-CREATE USER transcribo_user WITH PASSWORD 'your_secure_password_here';
+-- Create application user if it doesn't exist
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_user WHERE usename = 'transcribo_user') THEN
+        CREATE USER transcribo_user WITH PASSWORD 'your_secure_password_here';
+    END IF;
+END
+$$;
 
--- Create application database
-CREATE DATABASE transcribo;
+-- Create application database if it doesn't exist
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_database WHERE datname = 'transcribo') THEN
+        CREATE DATABASE transcribo;
+    END IF;
+END
+$$;
 
--- Grant privileges to application user
+-- Grant privileges
 ALTER USER transcribo_user WITH SUPERUSER;
 GRANT ALL PRIVILEGES ON DATABASE transcribo TO transcribo_user;
 
--- Connect to the application database
+-- Connect to the transcribo database
 \c transcribo;
 
 -- Create necessary tables
@@ -46,6 +58,5 @@ CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_file_id ON jobs(file_id);
 
 -- Grant permissions
-GRANT ALL ON SCHEMA public TO transcribo_user;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO transcribo_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO transcribo_user;
