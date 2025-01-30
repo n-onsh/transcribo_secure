@@ -50,7 +50,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     metadata JSONB
 );
 
+CREATE TABLE IF NOT EXISTS vocabulary (
+    id UUID PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,
+    word TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes
+CREATE INDEX IF NOT EXISTS idx_vocabulary_user_id ON vocabulary(user_id);
 CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id);
 CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);

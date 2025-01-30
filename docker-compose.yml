@@ -1,29 +1,43 @@
-name: transcribo
+version: "3.8"
 
 services:
   traefik:
     image: traefik:v2.11.0
     container_name: transcribo-secure-traefik
     command:
-      - "--api.insecure=true"  # Only for development
+      # For local dev only
+      - "--api.insecure=true"
+      
+      # Use Docker as a provider
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.websecure.address=:443"
+      
+      # File provider for self-signed cert
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+
+      # Entrypoints
       - "--entrypoints.web.address=:80"
       - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
       - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
-      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
-      - "--certificatesresolvers.myresolver.acme.email=your@email.com"
-      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      - "--entrypoints.websecure.address=:443"
+
+      # (Comment out ACME for local dev)
+      # - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      # - "--certificatesresolvers.myresolver.acme.email=you@example.com"
+      # - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+
     ports:
-      - "80:80"     # HTTP
-      - "443:443"   # HTTPS
-      - "8080:8080" # Traefik dashboard (remove in production)
+      - "80:80"
+      - "443:443"
+      - "8080:8080" # Traefik dashboard (dev only)
     volumes:
-      - "./infrastructure/docker/letsencrypt:/letsencrypt"
+      - "./infrastructure/docker/traefik/selfsigned:/etc/traefik/dynamic:ro"
+      # - "./infrastructure/docker/letsencrypt:/letsencrypt"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
     networks:
       - transcribo-secure-network
+    # No need for labels here, but you could add them if needed.
 
   postgres:
     image: postgres:15
@@ -32,7 +46,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - PGPASSWORD=${PGPASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -49,8 +62,8 @@ services:
     container_name: transcribo-secure-minio
     command: server --console-address ":9001" /data
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
     volumes:
       - "./infrastructure/docker/.minio/data:/data"
     networks:
@@ -62,6 +75,7 @@ services:
       - "traefik.http.services.minio-api-service.loadbalancer.server.port=9000"
       - "traefik.http.routers.minio-api.entrypoints=websecure"
       - "traefik.http.routers.minio-api.tls=true"
+
       - "traefik.http.routers.minio-console.rule=Host(`minio-console.localhost`)"
       - "traefik.http.routers.minio-console.service=minio-console-service"
       - "traefik.http.services.minio-console-service.loadbalancer.server.port=9001"
@@ -122,9 +136,9 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
-      - "traefik.http.services.frontend.loadbalancer.server.port=8080"
       - "traefik.http.routers.frontend.entrypoints=websecure"
       - "traefik.http.routers.frontend.tls=true"
+      - "traefik.http.services.frontend.loadbalancer.server.port=8080"
     env_file:
       - ".env"
 
@@ -145,13 +159,13 @@ services:
       - backend-api
     networks:
       - transcribo-secure-network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    
+    # Remove the Swarm-only "deploy: ..." block. Instead, for plain Docker, specify device_requests:
+    device_requests:
+      - driver: "nvidia"
+        count: 1
+        capabilities: ["gpu"]
+    
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.transcriber.rule=Host(`transcriber.localhost`)"
@@ -200,10 +214,8 @@ services:
     networks:
       - transcribo-secure-network
     depends_on:
-      postgres:
-        condition: service_healthy
-      prometheus:
-        condition: service_started
+      - postgres
+      - prometheus
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.grafana.rule=Host(`grafana.localhost`)"
