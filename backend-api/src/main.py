@@ -36,8 +36,7 @@ async def lifespan(app: FastAPI):
         
         # Initialize database and storage
         logger.info("Initializing database")
-        await db.init_db()
-        await db.init_jobs_table()
+        await db.initialize_database()  # Changed from init_db to initialize_database
         
         logger.info("Initializing storage")
         await storage.init_buckets()

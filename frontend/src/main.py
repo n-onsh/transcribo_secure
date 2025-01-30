@@ -2,113 +2,247 @@ from nicegui import ui
 import asyncio
 import httpx
 import os
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional, List
+import logging
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configuration
 BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://backend-api:8080/api/v1")
+REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "5"))
 
-class APIService:
-    """Handles API interactions with the backend."""
-    def __init__(self, user_id):
-        self.user_id = user_id
-
-    async def fetch_jobs(self):
+class FileUploader:
+    """Handles file upload functionality"""
+    def __init__(self, api_client: httpx.AsyncClient, refresh_callback):
+        self.api_client = api_client
+        self.refresh_callback = refresh_callback
+        
+    async def handle_upload(self, e):
+        """Handle file upload event"""
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{BACKEND_API_URL}/jobs/user/{self.user_id}")
-                return response.json() if response.status_code == 200 else []
+            files = {'file': (e.name, e.content.read())}
+            response = await self.api_client.post(f"{BACKEND_API_URL}/files/", files=files)
+            if response.status_code == 200:
+                ui.notify(f"File {e.name} uploaded successfully")
+                await self.refresh_callback()
+            else:
+                ui.notify(f"Upload failed: {response.text}", type='error')
         except Exception as e:
-            ui.notify(f"Failed to fetch jobs: {str(e)}", type="error")
-            return []
+            ui.notify(f"Upload error: {str(e)}", type='error')
 
-    async def fetch_vocabulary(self):
+    def handle_reject(self, e):
+        """Handle rejected files"""
+        ui.notify("Invalid file. Only audio/video files under 12GB are allowed.", type='error')
+
+class TranscriptionMonitor:
+    """Monitors transcription jobs and updates UI"""
+    def __init__(self, api_client: httpx.AsyncClient):
+        self.api_client = api_client
+        self.jobs = []
+        self.known_errors = set()
+        
+    def format_time(self, seconds: float) -> str:
+        return str(timedelta(seconds=round(seconds)))
+        
+    async def refresh_jobs(self):
+        """Refresh job list from backend"""
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(f"{BACKEND_API_URL}/vocabulary/{self.user_id}")
-                return response.json().get("vocabulary", "") if response.status_code == 200 else ""
+            response = await self.api_client.get(f"{BACKEND_API_URL}/jobs/")
+            if response.status_code == 200:
+                self.jobs = response.json()
+                await self.update_ui()
         except Exception as e:
-            ui.notify(f"Failed to fetch vocabulary: {str(e)}", type="error")
-            return ""
+            logger.error(f"Error refreshing jobs: {str(e)}")
 
-    async def update_vocabulary(self, vocab_text):
+    @ui.refreshable
+    async def update_ui(self):
+        """Update job status display"""
+        with ui.card().classes('w-full p-4'):
+            # Queue display
+            for job in sorted(self.jobs, key=lambda x: (x['status'], -x['created_at'])):
+                if job['status'] == 'processing':
+                    progress = job.get('progress', 0)
+                    ui.markdown(f"**{job['file_name']}**: Processing... {progress:.1f}%")
+                    ui.linear_progress(value=progress/100).props('instant-feedback')
+                elif job['status'] == 'pending':
+                    estimated_time = self.format_time(job.get('estimated_time', 0))
+                    ui.markdown(f"**{job['file_name']}**: Queued. Estimated wait: {estimated_time}")
+                ui.separator()
+
+            # Results display
+            completed_jobs = [j for j in self.jobs if j['status'] == 'completed']
+            for job in completed_jobs:
+                ui.markdown(f"**{job['file_name']}**")
+                with ui.row():
+                    ui.button(
+                        'Download Editor',
+                        on_click=lambda j=job: self.download_editor(j['job_id'])
+                    ).props('no-caps')
+                    ui.button(
+                        'Open Editor',
+                        on_click=lambda j=job: self.open_editor(j['job_id'])
+                    ).props('no-caps')
+                    ui.button(
+                        'Download SRT',
+                        on_click=lambda j=job: self.download_srt(j['job_id'])
+                    ).props('no-caps')
+                    ui.button(
+                        'Remove',
+                        on_click=lambda j=job: self.remove_job(j['job_id']),
+                        color='red-5'
+                    ).props('no-caps')
+                ui.separator()
+
+    async def download_editor(self, job_id: str):
+        """Download editor HTML"""
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(f"{BACKEND_API_URL}/vocabulary/{self.user_id}", json={"vocabulary": vocab_text})
-                if response.status_code == 200:
-                    ui.notify("Vocabulary updated successfully")
-                else:
-                    ui.notify("Failed to update vocabulary", type="error")
+            response = await self.api_client.get(f"{BACKEND_API_URL}/jobs/{job_id}/viewer")
+            if response.status_code == 200:
+                ui.download(content=response.text, filename=f"editor_{job_id}.html")
+            else:
+                ui.notify("Failed to download editor", type='error')
         except Exception as e:
-            ui.notify(f"Error updating vocabulary: {str(e)}", type="error")
+            ui.notify(f"Download error: {str(e)}", type='error')
 
+    async def open_editor(self, job_id: str):
+        """Open editor in new tab"""
+        try:
+            ui.open(f"/editor/{job_id}", new_tab=True)
+        except Exception as e:
+            ui.notify(f"Error opening editor: {str(e)}", type='error')
 
-class JobUI:
-    """Manages the job listing and interactions."""
-    def __init__(self, api_service):
-        self.api_service = api_service
-        self.jobs_container = None
-        self.refresh_interval = 5  # Polling interval in seconds
+    async def download_srt(self, job_id: str):
+        """Download SRT file"""
+        try:
+            response = await self.api_client.get(f"{BACKEND_API_URL}/jobs/{job_id}/export/srt")
+            if response.status_code == 200:
+                ui.download(content=response.json()['srt'], filename=f"transcript_{job_id}.srt")
+            else:
+                ui.notify("Failed to download SRT", type='error')
+        except Exception as e:
+            ui.notify(f"Download error: {str(e)}", type='error')
 
-    async def start_polling(self):
-        """Start background polling for jobs."""
-        while True:
-            await self.poll_jobs()
-            await asyncio.sleep(self.refresh_interval)
+    async def remove_job(self, job_id: str):
+        """Remove job and associated files"""
+        try:
+            response = await self.api_client.delete(f"{BACKEND_API_URL}/jobs/{job_id}")
+            if response.status_code == 200:
+                ui.notify("Job removed successfully")
+                await self.refresh_jobs()
+            else:
+                ui.notify("Failed to remove job", type='error')
+        except Exception as e:
+            ui.notify(f"Error removing job: {str(e)}", type='error')
 
-    async def poll_jobs(self):
-        """Fetch and update jobs from the backend."""
-        jobs = await self.api_service.get_user_jobs("test_user")
-        # Add logic to update the UI with jobs
-
-    def create_ui(self):
-        with ui.column().classes('w-full'):
-            ui.label('Your Jobs')
-
-
-
-class VocabularyUI:
-    """Manages the vocabulary input and interactions."""
-    def __init__(self, api_service):
-        self.api_service = api_service
-        self.vocab_input = None
+class VocabularyManager:
+    """Manages custom vocabulary"""
+    def __init__(self, api_client: httpx.AsyncClient):
+        self.api_client = api_client
+        self.vocabulary = set()
 
     async def load_vocabulary(self):
-        vocab_text = await self.api_service.fetch_vocabulary()
-        self.vocab_input.set_value(vocab_text)
+        """Load vocabulary from backend"""
+        try:
+            response = await self.api_client.get(f"{BACKEND_API_URL}/vocabulary")
+            if response.status_code == 200:
+                self.vocabulary = set(response.json()['words'])
+                if hasattr(self, 'textarea'):
+                    self.textarea.value = '\n'.join(sorted(self.vocabulary))
+        except Exception as e:
+            logger.error(f"Error loading vocabulary: {str(e)}")
 
-    def create_ui(self):
-        with ui.expansion("Custom Vocabulary", icon="menu_book").classes("w-full"):
-            self.vocab_input = ui.textarea(label="Vocabulary", placeholder="Enter custom words here...")
-            ui.button("Save Vocabulary", on_click=lambda: self.api_service.update_vocabulary(self.vocab_input.value.strip()))
-
+    async def save_vocabulary(self, text: str):
+        """Save vocabulary to backend"""
+        try:
+            words = {word.strip() for word in text.split('\n') if word.strip()}
+            response = await self.api_client.post(
+                f"{BACKEND_API_URL}/vocabulary",
+                json={'words': list(words)}
+            )
+            if response.status_code == 200:
+                ui.notify("Vocabulary saved")
+                self.vocabulary = words
+            else:
+                ui.notify("Failed to save vocabulary", type='error')
+        except Exception as e:
+            ui.notify(f"Error saving vocabulary: {str(e)}", type='error')
 
 class TranscriboUI:
-    """Main UI manager for the application."""
+    """Main UI application"""
     def __init__(self):
-        self.user_id = "test_user"  # Placeholder; this should eventually come from authentication
-        self.api_service = APIService(self.user_id)  # Pass user_id explicitly
-        self.job_ui = JobUI(self.api_service)  # Pass API service
-        self.vocab_ui = VocabularyUI(self.api_service)  # Pass API service
+        self.api_client = httpx.AsyncClient()
+        self.monitor = TranscriptionMonitor(self.api_client)
+        self.vocabulary = VocabularyManager(self.api_client)
+        self.uploader = FileUploader(self.api_client, self.monitor.refresh_jobs)
 
-    def create_ui(self):
-        """Create the entire UI layout."""
-        self.job_ui.create_ui()
-        self.vocab_ui.create_ui()
+    async def create_ui(self):
+        """Create main UI layout"""
+        # Header
+        with ui.header(elevated=True).style("background-color: #0070b4;").classes("q-pa-xs-xs"):
+            ui.image(str(Path(__file__).parent / "data" / "banner.png")).style(
+                "height: 90px; width: 443px;"
+            )
 
-        # Run background tasks on startup
-        ui.on_startup(self.job_ui.start_polling)
-        ui.on_startup(self.vocab_ui.load_vocabulary)
+        # Main content
+        with ui.row():
+            # Left column
+            with ui.column():
+                with ui.card().classes("border p-4"):
+                    # File upload
+                    with ui.card().style("width: min(40vw, 400px)"):
+                        upload = ui.upload(
+                            multiple=True,
+                            on_upload=self.uploader.handle_upload,
+                            on_rejected=self.uploader.handle_reject,
+                            label="Select Files",
+                            auto_upload=True,
+                            max_file_size=12_000_000_000,
+                            max_files=100,
+                        ).props('accept="video/*, audio/*, .zip"').classes("w-full")
 
+                    # Vocabulary section
+                    with ui.expansion("Vocabulary", icon="menu_book").classes("w-full"):
+                        self.vocabulary.textarea = ui.textarea(
+                            label="Vocabulary",
+                            placeholder="Zürich\nUster\nUitikon",
+                            on_change=lambda e: self.vocabulary.save_vocabulary(e.value)
+                        ).classes("w-full")
 
+                    # Help section
+                    with ui.expansion("Information", icon="help_outline").classes("w-full"):
+                        ui.label("This application was developed by the Statistical Office of Canton Zurich.")
 
-# Instantiate and create UI
-app_ui = TranscriboUI()
-app_ui.create_ui()
+                    ui.button(
+                        "Open Help",
+                        on_click=lambda: ui.open('/help', new_tab=True)
+                    ).props("no-caps")
+
+            # Right column - Job monitor
+            await self.monitor.update_ui()
+
+        # Start background tasks
+        asyncio.create_task(self._poll_jobs())
+        await self.vocabulary.load_vocabulary()
+
+    async def _poll_jobs(self):
+        """Background task to poll for job updates"""
+        while True:
+            await self.monitor.refresh_jobs()
+            await asyncio.sleep(REFRESH_INTERVAL)
+
+async def main():
+    """Application entry point"""
+    app = TranscriboUI()
+    await app.create_ui()
 
 if __name__ == "__main__":
-    app_ui = TranscriboUI()
-    app_ui.create_ui()
-
-    # Register startup tasks
     ui.run(
-        on_startup=app_ui.vocab_ui.load_vocabulary,
-        title="Transcribo Secure UI"
+        title="TranscriboZH",
+        host="0.0.0.0",
+        port=8501, 
+        reload=False
     )

@@ -1,71 +1,54 @@
--- Create application user if it doesn't exist
-DO $$ 
+-- Connect as postgres user first
+\c postgres postgres
+
+-- Create application user
+CREATE USER transcribo_user WITH PASSWORD 'your_secure_password';
+
+-- Create database
+CREATE DATABASE transcribo WITH OWNER = transcribo_user;
+
+-- Connect to the new database
+\c transcribo
+
+-- Create schema and set permissions
+CREATE SCHEMA IF NOT EXISTS public;
+GRANT ALL ON SCHEMA public TO transcribo_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO transcribo_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO transcribo_user;
+
+-- Enable extensions in the new database
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "hstore";
+
+-- Set configuration parameters
+ALTER DATABASE transcribo SET timezone TO 'UTC';
+
+-- Create function for updating timestamp
+CREATE OR REPLACE FUNCTION update_modified_column()
+RETURNS TRIGGER AS $$
 BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Verify setup
+DO $$
+BEGIN
+    -- Verify user exists
     IF NOT EXISTS (SELECT FROM pg_user WHERE usename = 'transcribo_user') THEN
-        CREATE USER transcribo_user WITH PASSWORD 'your_secure_password_here';
+        RAISE EXCEPTION 'Database user was not created properly';
+    END IF;
+
+    -- Verify schema exists
+    IF NOT EXISTS (SELECT FROM information_schema.schemata WHERE schema_name = 'public') THEN
+        RAISE EXCEPTION 'Schema was not created properly';
     END IF;
 END
 $$;
 
--- Create application database if it doesn't exist
-DO $$ 
-BEGIN
-    IF NOT EXISTS (SELECT FROM pg_database WHERE datname = 'transcribo') THEN
-        CREATE DATABASE transcribo;
-    END IF;
-END
-$$;
-
--- Grant privileges
-ALTER USER transcribo_user WITH SUPERUSER;
-GRANT ALL PRIVILEGES ON DATABASE transcribo TO transcribo_user;
-
--- Connect to the transcribo database
-\c transcribo;
-
--- Create necessary tables
-CREATE TABLE IF NOT EXISTS files (
-    file_id UUID PRIMARY KEY,
-    user_id VARCHAR(255) NOT NULL,
-    file_name VARCHAR(255) NOT NULL,
-    file_type VARCHAR(50) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    size_bytes BIGINT NOT NULL,
-    content_type VARCHAR(100),
-    metadata JSONB
-);
-
-CREATE TABLE IF NOT EXISTS jobs (
-    job_id UUID PRIMARY KEY,
-    file_id UUID REFERENCES files(file_id),
-    user_id VARCHAR(255) NOT NULL,
-    job_type VARCHAR(50) NOT NULL,
-    status VARCHAR(50) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    error_message TEXT,
-    progress FLOAT DEFAULT 0.0,
-    metadata JSONB
-);
-
-CREATE TABLE IF NOT EXISTS vocabulary (
-    id UUID PRIMARY KEY,
-    user_id VARCHAR(255) NOT NULL,
-    word TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create indexes
-CREATE INDEX IF NOT EXISTS idx_vocabulary_user_id ON vocabulary(user_id);
-CREATE INDEX IF NOT EXISTS idx_files_user_id ON files(user_id);
-CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_file_id ON jobs(file_id);
-
--- Grant permissions
-GRANT ALL ON ALL TABLES IN SCHEMA public TO transcribo_user;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO transcribo_user;
+-- Grant final permissions
+GRANT CONNECT ON DATABASE transcribo TO transcribo_user;
+GRANT USAGE ON SCHEMA public TO transcribo_user;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO transcribo_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO transcribo_user;

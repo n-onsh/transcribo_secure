@@ -41,8 +41,8 @@ services:
     image: postgres:15
     container_name: transcribo-secure-postgres
     environment:
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -50,7 +50,7 @@ services:
     networks:
       - transcribo-secure-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]  # Changed to match POSTGRES_USER
       interval: 5s
       timeout: 5s
       retries: 5
@@ -136,9 +136,7 @@ services:
       - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
       - "traefik.http.routers.frontend.entrypoints=websecure"
       - "traefik.http.routers.frontend.tls=true"
-      - "traefik.http.services.frontend.loadbalancer.server.port=8080"
-    env_file:
-      - ".env"
+      - "traefik.http.services.frontend.loadbalancer.server.port=8501"
 
   transcriber:
     build:
