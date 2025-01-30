@@ -15,8 +15,7 @@ class DatabaseService:
         self.conn: Optional[psycopg2.extensions.connection] = None
         self._connect_with_retries(max_retries, retry_delay)
 
-    def _connect_with_retries(self, max_retries: int, retry_delay: int):
-        """Attempt to connect to database with retries"""
+    def _connect_with_retries(self, max_retries=10, retry_delay=2):
         for attempt in range(max_retries):
             try:
                 self.conn = psycopg2.connect(
@@ -33,7 +32,7 @@ class DatabaseService:
                     logger.error(f"Failed to connect to database after {max_retries} attempts")
                     raise
                 logger.warning(f"Database connection attempt {attempt + 1} failed. Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
+                time.sleep(retry_delay * (2 ** attempt))
 
     async def close(self):
         """Close the database connection"""
