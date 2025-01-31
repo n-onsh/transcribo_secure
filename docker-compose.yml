@@ -41,16 +41,16 @@ services:
     image: postgres:15
     container_name: transcribo-secure-postgres
     environment:
-      - POSTGRES_DB=postgres
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - transcribo-secure-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]  # Changed to match POSTGRES_USER
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -86,7 +86,7 @@ services:
       dockerfile: "Dockerfile"
     container_name: transcribo-secure-backend-api
     environment:
-      - POSTGRES_HOST=postgres
+      - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
@@ -116,6 +116,8 @@ services:
       - "traefik.http.services.backend-api.loadbalancer.server.port=8080"
     env_file:
       - ".env"
+    command: >
+      sh -c "env && python -m src.main"
 
   frontend:
     build:

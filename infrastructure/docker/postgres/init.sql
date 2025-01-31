@@ -1,13 +1,11 @@
--- Connect as postgres user first
-\c postgres postgres
+-- First connect as superuser
+\c postgres
 
--- Create application user
-CREATE USER transcribo_user WITH PASSWORD 'your_secure_password';
+-- Then create our application user and database
+CREATE USER transcribo_user WITH PASSWORD '${POSTGRES_PASSWORD}';
+CREATE DATABASE transcribo OWNER transcribo_user;
 
--- Create database
-CREATE DATABASE transcribo WITH OWNER = transcribo_user;
-
--- Connect to the new database
+-- Connect to new database
 \c transcribo
 
 -- Create schema and set permissions
