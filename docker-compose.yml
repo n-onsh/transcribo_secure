@@ -41,12 +41,12 @@ services:
     image: postgres:15
     container_name: transcribo-secure-postgres
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=postgres
+      - POSTGRES_USER=transcribo_user
+      - POSTGRES_PASSWORD=your_secure_password
+      - POSTGRES_DB=transcribo
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    - postgres_data:/var/lib/postgresql/data
+    - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - transcribo-secure-network
     healthcheck:

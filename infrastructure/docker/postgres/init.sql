@@ -2,7 +2,7 @@
 \c postgres
 
 -- Then create our application user and database
-CREATE USER transcribo_user WITH PASSWORD '${POSTGRES_PASSWORD}';
+CREATE USER transcribo_user WITH PASSWORD 'your_secure_password';
 CREATE DATABASE transcribo OWNER transcribo_user;
 
 -- Connect to new database
