@@ -2,8 +2,16 @@
 \c postgres
 
 -- Then create our application user and database
-CREATE USER transcribo_user WITH PASSWORD 'your_secure_password';
-CREATE DATABASE transcribo OWNER transcribo_user;
+DO $$
+BEGIN
+  CREATE USER transcribo_user WITH PASSWORD 'your_secure_password';
+  EXCEPTION WHEN DUPLICATE_OBJECT THEN
+  RAISE NOTICE 'User transcribo_user already exists. Skipping.';
+END
+$$;
+
+SELECT 'CREATE DATABASE transcribo OWNER transcribo_user'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'transcribo')\gexec
 
 -- Connect to new database
 \c transcribo
