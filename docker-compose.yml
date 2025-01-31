@@ -150,20 +150,23 @@ services:
       - DEVICE=${DEVICE}
       - BATCH_SIZE=${BATCH_SIZE}
       - HF_AUTH_TOKEN=${HF_AUTH_TOKEN}
-      - METRICS_PORT=${METRICS_PORT}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - "transcriber_data:/tmp/transcriber"
+      - "huggingface_cache:/root/.cache/huggingface"
     depends_on:
       - backend-api
     networks:
       - transcribo-secure-network
-    
     deploy:
       resources:
         reservations:
           devices:
-            - capabilities: ["gpu"]
-    runtime: nvidia
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
     
     labels:
       - "traefik.enable=true"
@@ -234,3 +237,4 @@ volumes:
   grafana_data:
   transcriber_data:
   postgres_data:
+  huggingface_cache:

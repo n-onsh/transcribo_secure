@@ -206,6 +206,22 @@ class AudioProcessor:
             logger.error(f"Error cleaning up job {job_id}: {str(e)}")
     
 
+import torch
+import whisperx
+import time
+import logging
+from pyannote.audio import Pipeline
+from typing import Optional, List, Dict, Tuple
+from datetime import datetime
+import ffmpeg
+from pathlib import Path
+import tempfile
+import os
+import asyncio
+import zipfile
+
+logger = logging.getLogger(__name__)
+
 class TranscriptionService:
     def __init__(
         self,
@@ -219,7 +235,15 @@ class TranscriptionService:
         self.hf_token = hf_token
         self.compute_type = compute_type
         self.audio_processor = AudioProcessor()
-        self._init_models()
+        
+        # Verify GPU availability if CUDA requested
+        if self.device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA device requested but no GPU available")
+        
+        # Initialize models
+        self.model = None
+        self.diarize_model = None
+        self.initialize_models()
         
         # Language settings
         self.primary_languages = {'de', 'en', 'gsw'}  # German, English, Swiss German
@@ -232,24 +256,29 @@ class TranscriptionService:
             'rm': 'Romansh'
         }
 
-    def _init_models(self):
-        """Initialize whisper and diarization models"""
-        whisper_device = "cpu" if self.device == "mps" else self.device
-        compute_type = "float32" if whisper_device == "cpu" else self.compute_type
+    def initialize_models(self):
+        """Initialize Whisper and diarization models"""
+        try:
+            # Initialize Whisper model
+            logger.info("Loading Whisper model...")
+            self.model = whisperx.load_model(
+                "large-v3",
+                self.device,
+                compute_type=self.compute_type
+            )
+            logger.info("Whisper model loaded successfully")
 
-        # Load whisper model
-        whisper_model = "tiny.en" if self.device == "mps" else "large-v3"
-        self.model = whisperx.load_model(
-            whisper_model,
-            whisper_device,
-            compute_type=compute_type
-        )
-        
-        # Load diarization model
-        self.diarize_model = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization",
-            use_auth_token=self.hf_token
-        ).to(torch.device(self.device))
+            # Initialize diarization model
+            logger.info("Loading diarization model...")
+            self.diarize_model = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization",
+                use_auth_token=self.hf_token
+            ).to(torch.device(self.device))
+            logger.info("Diarization model loaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize models: {str(e)}")
+            raise RuntimeError("Model initialization failed") from e
 
     def prepare_vocabulary(self, vocabulary: List[str]) -> str:
         """
@@ -296,10 +325,7 @@ class TranscriptionService:
         
         return "\n".join(srt_content)
 
-    async def detect_segment_language(
-        self,
-        segment_audio: torch.Tensor
-    ) -> Dict[str, any]:
+    async def detect_segment_language(self, segment_audio: torch.Tensor) -> Dict[str, any]:
         """Detect language for a single segment"""
         try:
             # Get model features
@@ -333,6 +359,134 @@ class TranscriptionService:
                 'language_confidence': 0.5,
                 'is_foreign': False
             }
+
+    async def transcribe(
+        self,
+        audio_path: str,
+        job_id: str = None,
+        vocabulary: Optional[List[str]] = None
+    ) -> dict:
+        """
+        Transcribe audio file with diarization and custom vocabulary
+        """
+        try:
+            # Verify models are initialized
+            if not self.is_ready:
+                raise RuntimeError("Models not properly initialized")
+
+            start_time = time.time()
+            logger.info(f"Starting transcription for job {job_id}")
+
+            # Check if file is ZIP
+            if zipfile.is_zipfile(audio_path):
+                logger.info("Processing ZIP file...")
+                processed_path, duration = await self.audio_processor.process_zip(
+                    audio_path,
+                    job_id
+                )
+            else:
+                # Regular audio processing
+                processed_path, duration = await self.audio_processor.process_audio(
+                    audio_path,
+                    job_id
+                )
+
+            # Load processed audio
+            audio = whisperx.load_audio(processed_path)
+
+            # Prepare vocabulary if provided
+            prompt = self.prepare_vocabulary(vocabulary)
+            
+            # Set prompt if vocabulary exists
+            if prompt:
+                self.model.options = self.model.options._replace(prefix=prompt)
+
+            # Transcribe with whisper
+            logger.info("Running initial transcription...")
+            result = self.model.transcribe(
+                audio,
+                batch_size=self.batch_size,
+                language="de"
+            )
+
+            # Reset prompt after transcription
+            if prompt:
+                self.model.options = self.model.options._replace(prefix=None)
+
+            # Align whisper output
+            logger.info("Aligning transcription...")
+            model_a, metadata = whisperx.load_align_model(
+                language_code=result["language"],
+                device=self.device
+            )
+            result = whisperx.align(
+                result["segments"],
+                model_a,
+                metadata,
+                audio,
+                self.device,
+                return_char_alignments=False
+            )
+
+            # Diarize
+            logger.info("Running speaker diarization...")
+            diarize_segments = self.diarize_model(
+                {"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": 16000}
+            )
+
+            # Convert diarization results to dataframe
+            diarize_df = whisperx.diarize.segments_to_df(diarize_segments)
+            
+            # Assign speakers to words
+            logger.info("Assigning speakers to segments...")
+            result = whisperx.assign_word_speakers(diarize_df, result)
+
+            # Detect languages for each segment
+            logger.info("Detecting segment languages...")
+            for segment in result["segments"]:
+                start_idx = int(segment['start'] * 16000)
+                end_idx = int(segment['end'] * 16000)
+                segment_audio = audio[start_idx:end_idx]
+                
+                # Add padding if segment is too short
+                if len(segment_audio) < 16000:
+                    segment_audio = torch.nn.functional.pad(
+                        segment_audio,
+                        (0, 16000 - len(segment_audio))
+                    )
+                
+                # Detect language
+                lang_info = await self.detect_segment_language(segment_audio)
+                segment.update(lang_info)
+
+            # Generate SRT content
+            srt_content = self.create_srt(result["segments"])
+
+            duration = time.time() - start_time
+            logger.info(f"Transcription completed in {duration:.2f} seconds")
+
+            # Cleanup
+            self.audio_processor.cleanup(job_id)
+
+            return {
+                "segments": result["segments"],
+                "language": result["language"],
+                "duration": duration,
+                "srt_content": srt_content,
+                "completed_at": datetime.utcnow().isoformat()
+            }
+
+        except Exception as e:
+            logger.error(f"Transcription failed: {str(e)}")
+            # Ensure cleanup on error
+            if job_id:
+                self.audio_processor.cleanup(job_id)
+            raise
+
+    @property
+    def is_ready(self) -> bool:
+        """Check if service is ready for transcription"""
+        return self.model is not None and self.diarize_model is not None
 
 async def transcribe(
     self,
