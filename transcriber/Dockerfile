@@ -1,5 +1,5 @@
-# Use official PyTorch image with CUDA 11.8
-FROM pytorch/pytorch:2.1.2-cuda11.8-cudnn8-runtime
+# Use official PyTorch image with CUDA 12.1
+FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
 
 # Install system dependencies
 RUN apt-get update && \
