@@ -5,21 +5,17 @@ services:
     command:
       # For local dev only
       - "--api.insecure=true"
-      
       # Use Docker as a provider
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      
       # File provider for self-signed cert
       - "--providers.file.directory=/etc/traefik/dynamic"
       - "--providers.file.watch=true"
-
       # Entrypoints
       - "--entrypoints.web.address=:80"
       - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
       - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
-
       # (Comment out ACME for local dev)
       - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
       - "--certificatesresolvers.myresolver.acme.email=you@example.com"
@@ -123,12 +119,11 @@ services:
     environment:
       - BACKEND_API_URL=${BACKEND_API_URL}
       - REFRESH_INTERVAL=${REFRESH_INTERVAL}
-    # Added env_file so that .env is available to load_dotenv() in the frontend code.
     env_file:
       - .env
     volumes:
-    - "./frontend:/app"
-    - "./.env:/app/.env:ro"
+      - "./frontend:/app"
+      - "./.env:/app/.env:ro"
     networks:
       - transcribo-secure-network
     depends_on:
@@ -176,63 +171,28 @@ services:
     env_file:
       - .env
 
-  prometheus:
-    image: prom/prometheus:v2.48.1
-    container_name: transcribo-secure-prometheus
-    volumes:
-      - "./infrastructure/docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml"
-      - "prometheus_data:/prometheus"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-    networks:
-      - transcribo-secure-network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.prometheus.rule=Host(`prometheus.localhost`)"
-      - "traefik.http.routers.prometheus.entrypoints=websecure"
-      - "traefik.http.routers.prometheus.tls=true"
-      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
-
-  grafana:
-    image: grafana/grafana:10.3.0
-    container_name: transcribo-secure-grafana
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: transcribo-secure-otel
     environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - OTEL_LOG_LEVEL=${OTEL_LOG_LEVEL}
     volumes:
-      - "grafana_data:/var/lib/grafana"
-      - "./infrastructure/docker/grafana/provisioning:/etc/grafana/provisioning"
-      - "./infrastructure/docker/grafana/provisioning/plugins:/etc/grafana/provisioning/plugins"
-      - "./infrastructure/docker/grafana/provisioning/notifiers:/etc/grafana/provisioning/notifiers"
-      - "./infrastructure/docker/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting"
+      - otel_data:/data
     networks:
       - transcribo-secure-network
-    depends_on:
-      - postgres
-      - prometheus
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`grafana.localhost`)"
-      - "traefik.http.routers.grafana.entrypoints=websecure"
-      - "traefik.http.routers.grafana.tls=true"
-      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-    env_file:
-      - .env
+      - "traefik.http.routers.otel.rule=Host(`otel.localhost`)"
+      - "traefik.http.routers.otel.entrypoints=websecure"
+      - "traefik.http.routers.otel.tls=true"
+      - "traefik.http.services.otel.loadbalancer.server.port=3000"
 
 networks:
   transcribo-secure-network:
     name: transcribo-secure-network
 
 volumes:
-  prometheus_data:
-  grafana_data:
   transcriber_data:
   postgres_data:
   huggingface_cache:
+  otel_data:
