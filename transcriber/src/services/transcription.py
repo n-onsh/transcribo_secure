@@ -11,6 +11,8 @@ import tempfile
 import os
 import asyncio
 import zipfile
+from huggingface_hub import HfFolder
+
 
 logger = logging.getLogger(__name__)
 
@@ -605,3 +607,24 @@ async def transcribe(
         # Ensure cleanup on error
         self.audio_processor.cleanup(job_id)
         raise
+
+def initialize_models(self):
+        try:
+            # Store HF token first
+            HfFolder.save_token(self.hf_auth_token)
+            
+            # Load diarization model with explicit config
+            self.diarization_pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                use_auth_token=self.hf_auth_token,
+                cache_dir=self.model_cache_dir
+            )
+            
+            if self.diarization_pipeline is None:
+                raise ValueError("Diarization pipeline failed to load")
+                
+            self.diarization_pipeline.to(torch.device(self.device))
+            
+        except Exception as e:
+            self.logger.error(f"Model loading failed: {str(e)}")
+            raise    

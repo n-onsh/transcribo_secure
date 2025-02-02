@@ -9,6 +9,9 @@ RUN apt-get update && \
 # Set working directory
 WORKDIR /app
 
+# Copy .env file so that pydantic BaseSettings can load configuration
+COPY .env .
+
 # Install Python dependencies first for better layer caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

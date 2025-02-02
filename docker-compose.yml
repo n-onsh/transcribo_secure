@@ -24,7 +24,6 @@ services:
       - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
       - "--certificatesresolvers.myresolver.acme.email=you@example.com"
       - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
-
     ports:
       - "80:80"
       - "443:443"
@@ -35,7 +34,6 @@ services:
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
     networks:
       - transcribo-secure-network
-    # No need for labels here, but you could add them if needed.
 
   postgres:
     image: postgres:15
@@ -45,8 +43,8 @@ services:
       - POSTGRES_PASSWORD=your_secure_password
       - POSTGRES_DB=transcribo
     volumes:
-    - postgres_data:/var/lib/postgresql/data
-    - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - transcribo-secure-network
     healthcheck:
@@ -125,8 +123,12 @@ services:
     environment:
       - BACKEND_API_URL=${BACKEND_API_URL}
       - REFRESH_INTERVAL=${REFRESH_INTERVAL}
+    # Added env_file so that .env is available to load_dotenv() in the frontend code.
+    env_file:
+      - .env
     volumes:
-      - "./frontend:/app"
+    - "./frontend:/app"
+    - "./.env:/app/.env:ro"
     networks:
       - transcribo-secure-network
     depends_on:
@@ -155,7 +157,6 @@ services:
       - "huggingface_cache:/root/.cache/huggingface"
     depends_on:
       - backend-api
-      
     networks:
       - transcribo-secure-network
     deploy:
@@ -166,7 +167,6 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.transcriber.rule=Host(`transcriber.localhost`)"
@@ -174,8 +174,7 @@ services:
       - "traefik.http.routers.transcriber.entrypoints=websecure"
       - "traefik.http.routers.transcriber.tls=true"
     env_file:
-      - ".env"
-
+      - .env
 
   prometheus:
     image: prom/prometheus:v2.48.1
@@ -225,7 +224,7 @@ services:
       - "traefik.http.routers.grafana.tls=true"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
     env_file:
-      - ".env"
+      - .env
 
 networks:
   transcribo-secure-network:

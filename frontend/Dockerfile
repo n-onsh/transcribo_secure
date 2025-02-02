@@ -2,6 +2,9 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+# Copy .env file so that python-dotenv can load configuration
+COPY .env .
+
 # Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

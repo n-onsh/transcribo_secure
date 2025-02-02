@@ -2,6 +2,9 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+# Copy .env file so that pydantic BaseSettings can load configuration
+COPY .env .
+
 RUN apt-get update && apt-get install -y \
     gcc \
     libmagic-dev \
