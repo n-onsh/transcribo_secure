@@ -1,6 +1,6 @@
-# tests/test_storage_service.py
 import io
 import pytest
+import os
 from backend_api.src.services.storage import StorageService
 from backend_api.src.services.encryption import EncryptionService
 
@@ -16,6 +16,9 @@ class DummyEncryptionService:
 
 @pytest.fixture
 def storage_service(monkeypatch):
+    # Override the Minio host to "localhost" for testing.
+    monkeypatch.setenv("MINIO_HOST", "localhost")
+    monkeypatch.setenv("MINIO_PORT", "9000")
     service = StorageService()
     # Override the encryption service with the dummy implementation.
     service.encryption = DummyEncryptionService()

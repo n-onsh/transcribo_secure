@@ -1,4 +1,3 @@
-# tests/test_metrics_instrumentation.py
 import pytest
 import time
 from transcriber.src.utils.metrics import track_time, TRANSCRIPTION_DURATION
@@ -7,13 +6,23 @@ from transcriber.src.utils.metrics import track_time, TRANSCRIPTION_DURATION
 async def test_track_time_decorator():
     @track_time(TRANSCRIPTION_DURATION)
     async def dummy_function():
-        time.sleep(0.1)
+        # Use a non-blocking sleep in async context.
+        import asyncio
+        await asyncio.sleep(0.1)
         return "done"
     
     result = await dummy_function()
     assert result == "done"
     
-    # Check that the histogram has recorded a value (internal _sum should be greater than zero).
-    # (Note: Accessing internal attributes is not ideal in production tests,
-    # but it provides confirmation here.)
-    assert TRANSCRIPTION_DURATION._sum > 0
+    # Extract the _sum from the collected metrics.
+    collected = list(TRANSCRIPTION_DURATION.collect())
+    sum_value = None
+    for metric in collected:
+        for sample in metric.samples:
+            if sample.name.endswith("_sum"):
+                sum_value = sample.value
+                break
+        if sum_value is not None:
+            break
+    assert sum_value is not None, "Histogram sum not found."
+    assert sum_value > 0

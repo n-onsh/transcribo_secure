@@ -1,4 +1,3 @@
-# tests/test_job_manager.py
 import asyncio
 import pytest
 import uuid
@@ -23,8 +22,10 @@ class FakeDatabaseService:
         if job:
             if update.status:
                 job.status = update.status
-            if update.error_message:
+            if update.error_message is not None:
                 job.error_message = update.error_message
+            if update.progress is not None:
+                job.progress = update.progress
             job.updated_at = datetime.utcnow()
             self.jobs[job_id] = job
             return job
