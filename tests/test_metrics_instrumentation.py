@@ -1,7 +1,7 @@
 # tests/test_metrics_instrumentation.py
 import pytest
 import time
-from backend_api.src.utils.metrics import track_time, TRANSCRIPTION_DURATION
+from transcriber.src.utils.metrics import track_time, TRANSCRIPTION_DURATION
 
 @pytest.mark.asyncio
 async def test_track_time_decorator():
