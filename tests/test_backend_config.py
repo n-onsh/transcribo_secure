@@ -1,13 +1,9 @@
 # tests/test_backend_config.py
 import os
 import pytest
-
-# Import the configuration loader from the backend API.
-# Adjust the import path if necessary.
-from config import get_settings
+from backend_api.src.config import get_settings  # Absolute import
 
 def test_backend_settings_loading(monkeypatch):
-    # Set test values for backend configuration environment variables.
     monkeypatch.setenv("POSTGRES_HOST", "test_postgres")
     monkeypatch.setenv("POSTGRES_PORT", "5432")
     monkeypatch.setenv("POSTGRES_DB", "test_db")
@@ -25,7 +21,6 @@ def test_backend_settings_loading(monkeypatch):
     
     settings = get_settings()
     
-    # Assert that the settings match the test values.
     assert settings.POSTGRES_HOST == "test_postgres"
     assert settings.POSTGRES_PORT == "5432"
     assert settings.POSTGRES_DB == "test_db"
