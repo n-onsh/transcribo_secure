@@ -1,0 +1,4 @@
+tls:
+  certificates:
+    - certFile: /etc/traefik/dynamic/cert.pem
+      keyFile: /etc/traefik/dynamic/key.pem

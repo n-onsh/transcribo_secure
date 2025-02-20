@@ -12,15 +12,19 @@ class JSONFormatter(logging.Formatter):
         """Format the log record as JSON"""
         # Base log data
         log_data = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "thread": threading.current_thread().name,
-            "message": record.getMessage(),
-            "path": record.pathname,
-            "line": record.lineno,
-            "function": record.funcName
+            "ts": datetime.utcnow().isoformat(),
+            "lvl": record.levelname,
+            "msg": record.getMessage()
         }
+
+        # Only include location info for ERROR and above
+        if record.levelno >= logging.ERROR:
+            log_data.update({
+                "logger": record.name,
+                "path": record.pathname,
+                "line": record.lineno,
+                "func": record.funcName
+            })
 
         # Add exception info if present
         if record.exc_info:

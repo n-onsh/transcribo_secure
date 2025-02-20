@@ -1,16 +1,14 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import time
-from .routes import files, jobs
+from .routes import files, jobs, transcriber
 from .services.database import DatabaseService
 from .services.storage import StorageService
-from .services.cleanup import CleanupService
-from .routes import transcriber
-from .middleware.file_validation import validate_file_middleware
-from .config import get_settings
+from .middleware.auth import AzureADAuth
 from .utils.logging import setup_logging, LogContext, get_logger
 import uuid
+from typing import Dict
 
 # Setup logging
 setup_logging(
@@ -19,43 +17,31 @@ setup_logging(
     json_format=True
 )
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
+
+# Initialize auth
+auth_handler = AzureADAuth()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the FastAPI application"""
-    # Load settings
-    settings = get_settings()
-    logger.info("Starting backend-api")
-    
     try:
         # Initialize services
         db = DatabaseService()
         storage = StorageService()
-        cleanup = CleanupService(db, storage)
         
-        # Initialize database and storage
-        logger.info("Initializing database")
-        await db.initialize_database()  # Changed from init_db to initialize_database
-        
-        logger.info("Initializing storage")
+        # Initialize
+        await db.initialize_database()
         await storage.init_buckets()
-        
-        # Start cleanup service
-        logger.info("Starting cleanup service")
-        await cleanup.start()
+        logger.info("Backend services initialized")
         
         yield
         
-        # Cleanup on shutdown
-        logger.info("Stopping cleanup service")
-        await cleanup.stop()
-        
-        logger.info("Closing database connection")
         await db.close()
+        logger.info("Backend services stopped")
         
     except Exception as e:
-        logger.error(f"Error during startup/shutdown: {str(e)}")
+        logger.error(f"Startup/shutdown error: {str(e)}")
         raise
 
 app = FastAPI(
@@ -82,60 +68,75 @@ async def logging_middleware(request: Request, call_next):
         client_host=request.client.host if request.client else None
     ):
         try:
-            # Log request
-            logger.info(
-                f"Request started: {request.method} {request.url.path}"
-            )
-            
-            # Process request
+            # Process request without start log
             response = await call_next(request)
             
             # Calculate duration
             duration = time.time() - start_time
             
-            # Log response
-            logger.info(
-                f"Request completed: {request.method} {request.url.path}",
-                extra={
-                    "status_code": response.status_code,
-                    "duration": duration
-                }
-            )
+            # Only log non-200 responses or slow requests
+            if response.status_code != 200 or duration > 1.0:
+                logger.info(
+                    f"{request.method} {request.url.path}",
+                    extra={
+                        "status": response.status_code,
+                        "dur": f"{duration:.2f}s"
+                    }
+                )
             
             return response
             
         except Exception as e:
-            # Log error
+            # Log error more concisely
             logger.error(
-                f"Request failed: {request.method} {request.url.path}",
+                f"{request.method} {request.url.path} failed",
                 exc_info=e,
-                extra={
-                    "duration": time.time() - start_time
-                }
+                extra={"dur": f"{time.time() - start_time:.2f}s"}
             )
             raise
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Update this for production
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Add file validation middleware
-app.middleware("http")(validate_file_middleware)
+# Dependency to get authenticated user
+async def get_current_user(request: Request = None) -> Dict:
+    """Get authenticated user from request state"""
+    if not request or not hasattr(request.state, "user"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return request.state.user
 
-# Include routers
-app.include_router(files.router, prefix="/api/v1")
-app.include_router(jobs.router, prefix="/api/v1")
-app.include_router(transcriber.router, prefix="/api/v1/transcriber")
+# Include routers with auth
+app.include_router(
+    files.router,
+    prefix="/api/v1",
+    dependencies=[Depends(auth_handler), Depends(get_current_user)]
+)
+app.include_router(
+    jobs.router,
+    prefix="/api/v1",
+    dependencies=[Depends(auth_handler), Depends(get_current_user)]
+)
+app.include_router(
+    transcriber.router,
+    prefix="/api/v1/transcriber",
+    dependencies=[Depends(auth_handler), Depends(get_current_user)]
+)
 
 @app.get("/health")
 async def health_check():
-    """Basic health check endpoint"""
+    """Basic health check endpoint - no auth required"""
     return {
         "status": "healthy",
         "timestamp": time.time()
     }
+
+@app.get("/api/v1/me", dependencies=[Depends(auth_handler)])
+async def get_user_info(user: Dict = Depends(get_current_user)):
+    """Get authenticated user info"""
+    return user

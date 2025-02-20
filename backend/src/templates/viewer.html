@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TranscriboZH Viewer</title>
+    <style>
+        /* Base styles */
+        :root {
+            --primary-color: #0070b4;
+            --text-color: #333;
+            --border-color: #ddd;
+            --bg-color: #f5f5f5;
+            --speaker-bg: #e3f2fd;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--text-color);
+            background: var(--bg-color);
+            line-height: 1.6;
+        }
+
+        .viewer-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: var(--primary-color);
+            color: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo img {
+            height: 40px;
+        }
+
+        .actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        /* Main content */
+        .content {
+            flex: 1;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            overflow: auto;
+        }
+
+        /* Player */
+        .player-container {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: white;
+            padding: 1rem;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        #audio-player {
+            width: 100%;
+            margin-bottom: 0.5rem;
+        }
+
+        .player-controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        /* Transcript */
+        .transcript-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 2rem;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .speaker-section {
+            margin-bottom: 2rem;
+        }
+
+        .speaker-header {
+            background: var(--speaker-bg);
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .speaker-name {
+            font-weight: bold;
+        }
+
+        .timestamp {
+            color: #666;
+            font-size: 0.875rem;
+        }
+
+        .segment-text {
+            margin-bottom: 1rem;
+            padding: 0 1rem;
+        }
+
+        /* Footer */
+        .footer {
+            background: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            border-top: 1px solid var(--border-color);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            background: #eee;
+            font-size: 0.875rem;
+            transition: background-color 0.2s;
+        }
+
+        .btn:hover {
+            background: #ddd;
+        }
+
+        .btn.primary {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .btn.primary:hover {
+            background: #005a91;
+        }
+
+        /* Options */
+        .options-container {
+            background: white;
+            padding: 1rem;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+        }
+
+        .options-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .option-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .header {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .transcript-container {
+                padding: 1rem;
+            }
+
+            .options-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="viewer-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <img src="/assets/logo.png" alt="TranscriboZH">
+            </div>
+            <div class="actions">
+                <button id="export-txt-btn" class="btn">Export Text</button>
+                <button id="export-srt-btn" class="btn">Export SRT</button>
+                <button id="open-editor-btn" class="btn primary">Open Editor</button>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <main class="content">
+            <!-- Audio player -->
+            <div class="player-container">
+                <audio id="audio-player" controls>
+                    <source src="{{ audio_url }}" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+                <div class="player-controls">
+                    <label for="playback-rate">Speed:</label>
+                    <select id="playback-rate">
+                        <option value="0.5">0.5x</option>
+                        <option value="0.75">0.75x</option>
+                        <option value="1.0" selected>1.0x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="2.0">2.0x</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Options -->
+            <div class="options-container">
+                <div class="options-grid">
+                    <label class="option-item">
+                        <input type="checkbox" id="combine-speakers" {% if options.combine_speakers %}checked{% endif %}>
+                        Combine speaker segments
+                    </label>
+                    <label class="option-item">
+                        <input type="checkbox" id="show-timestamps" {% if options.show_timestamps %}checked{% endif %}>
+                        Show timestamps
+                    </label>
+                    <label class="option-item">
+                        <input type="checkbox" id="include-foreign" {% if options.include_foreign %}checked{% endif %}>
+                        Include foreign language
+                    </label>
+                </div>
+            </div>
+
+            <!-- Transcript -->
+            <div class="transcript-container">
+                {% for segment in segments %}
+                {% if loop.first or segment.speaker != segments[loop.index0 - 1].speaker %}
+                {% if not loop.first %}</div>{% endif %}
+                <div class="speaker-section">
+                    <div class="speaker-header">
+                        <span class="speaker-name">{{ segment.speaker }}</span>
+                        {% if options.show_timestamps %}
+                        <span class="timestamp">{{ segment.timestamp }}</span>
+                        {% endif %}
+                    </div>
+                {% endif %}
+                    <div class="segment-text" data-start="{{ segment.start }}" data-end="{{ segment.end }}">
+                        {{ segment.text }}
+                    </div>
+                {% if loop.last %}</div>{% endif %}
+                {% endfor %}
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="info">
+                <span>Job ID: {{ job_id }}</span>
+                <span>Duration: {{ transcription.duration|format_duration }}</span>
+                <span>Words: {{ transcription.word_count }}</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        window.VIEWER_CONFIG = {
+            userId: "{{ user_id }}",
+            jobId: "{{ job_id }}",
+            timestamp: "{{ timestamp }}",
+            options: JSON.parse('{{ options|tojson|safe }}')
+        };
+    </script>
+    <script src="/assets/viewer.js"></script>
+</body>
+</html>

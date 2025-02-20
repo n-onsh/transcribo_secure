@@ -1,5 +1,6 @@
 # Core requirements
 nicegui>=1.4.29
+msal>=1.26.0  # Azure authentication
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-dotenv>=1.0.1

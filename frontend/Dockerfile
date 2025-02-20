@@ -3,19 +3,19 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
     build-essential \
     curl \
     ffmpeg \
     git \
     libmagic1 \
+    > /dev/null 2>&1 \
     && rm -rf /var/lib/apt/lists/*
-
 
 # Install Python dependencies first for better caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt --quiet
 
 # Create necessary directories
 RUN mkdir -p /app/static /app/data /app/data/in /app/data/out /app/data/error /app/data/worker
@@ -48,6 +48,5 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
 # Expose port
 EXPOSE 8501
 
-# Set entrypoint with proper command for NiceGUI
-ENTRYPOINT ["python", "src/main.py"]
-
+# Set entrypoint with proper module execution
+ENTRYPOINT ["python", "-m", "src.main"]
