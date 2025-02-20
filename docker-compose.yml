@@ -1,0 +1,238 @@
+services:
+  traefik:
+    image: traefik:v2.11.0
+    container_name: transcribo-secure-traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - "./infrastructure/docker/traefik/selfsigned:/etc/traefik/dynamic:ro"
+      - "./infrastructure/docker/letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - transcribo-secure-network
+
+  postgres:
+    image: postgres:15
+    container_name: transcribo-secure-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - transcribo-secure-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    container_name: transcribo-secure-minio
+    command: server --console-address ":9001" /data
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - "./infrastructure/docker/.minio/data:/data"
+      - "./.env:/app/.env:ro"
+    networks:
+      - transcribo-secure-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.minio-api.rule=Host(`minio-api.localhost`)"
+      - "traefik.http.routers.minio-console.rule=Host(`minio-console.localhost`)"
+      - "traefik.http.routers.minio-api.entrypoints=websecure"
+      - "traefik.http.routers.minio-console.entrypoints=websecure"
+      - "traefik.http.routers.minio-api.tls=true"
+      - "traefik.http.routers.minio-console.tls=true"
+      - "traefik.http.routers.minio-api.service=minio"
+      - "traefik.http.routers.minio-console.service=minio"
+      - "traefik.http.services.minio.loadbalancer.server.port=9000"
+
+  backend:
+    build:
+      context: "./backend"
+      dockerfile: Dockerfile
+    container_name: transcribo-secure-backend
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - MINIO_HOST=${MINIO_HOST}
+      - MINIO_PORT=${MINIO_PORT}
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+      - AZURE_KEYVAULT_URL=${AZURE_KEYVAULT_URL}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - HF_AUTH_TOKEN=${HF_AUTH_TOKEN}
+      - MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+    depends_on:
+      - postgres
+      - minio
+      - otel-collector
+    networks:
+      - transcribo-secure-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.localhost`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.services.backend.loadbalancer.server.port=8080"
+    volumes:
+      - "./.env:/app/.env:ro"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        ./wait-for-it.sh postgres:5432 --timeout=30 &&
+        ./wait-for-it.sh minio:9000 --timeout=30 &&
+        python -m src.main
+
+  frontend:
+    build:
+      context: "./frontend"
+      dockerfile: Dockerfile
+    container_name: transcribo-secure-frontend
+    environment:
+      - BACKEND_API_URL=http://backend:8080/api/v1
+      - REFRESH_INTERVAL=${REFRESH_INTERVAL}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+    volumes:
+      - "./frontend:/app"
+      - "./.env:/app/.env:ro"
+    networks:
+      - transcribo-secure-network
+    depends_on:
+      - backend
+      - otel-collector
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls=true"
+      - "traefik.http.services.frontend.loadbalancer.server.port=8501"
+
+  transcriber:
+    build:
+      context: "./transcriber"
+      dockerfile: Dockerfile
+    container_name: transcribo-secure-transcriber
+    environment:
+      - BACKEND_API_URL=http://backend:8080/api/v1
+      - DEVICE=${DEVICE}
+      - BATCH_SIZE=${BATCH_SIZE}
+      - HF_AUTH_TOKEN=${HF_AUTH_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+    volumes:
+      - "transcriber_data:/tmp/transcriber"
+      - "huggingface_cache:/root/.cache/huggingface"
+      - "./.env:/app/.env:ro"
+    depends_on:
+      - backend
+      - otel-collector
+    networks:
+      - transcribo-secure-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.transcriber.rule=Host(`transcriber.localhost`)"
+      - "traefik.http.services.transcriber.loadbalancer.server.port=8000"
+      - "traefik.http.routers.transcriber.entrypoints=websecure"
+      - "traefik.http.routers.transcriber.tls=true"
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.96.0
+    container_name: transcribo-secure-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    depends_on:
+      - loki
+      - tempo
+    networks:
+      - transcribo-secure-network
+
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: transcribo-secure-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+    networks:
+      - transcribo-secure-network
+
+  tempo:
+    image: grafana/tempo:2.3.0
+    container_name: transcribo-secure-tempo
+    command: ["--target=all", "--storage.trace.backend=local", "--storage.trace.local.path=/tmp/tempo"]
+    volumes:
+      - tempo_data:/tmp/tempo
+    networks:
+      - transcribo-secure-network
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: transcribo-secure-grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_PROXY_ENABLED=true
+      - GF_SERVER_ROOT_URL=https://metrics.localhost
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/docker/grafana/provisioning:/etc/grafana/provisioning
+      - ./infrastructure/docker/grafana/dashboards:/var/lib/grafana/dashboards
+      - "./.env:/app/.env:ro"
+    networks:
+      - transcribo-secure-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`metrics.localhost`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls=true"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+networks:
+  transcribo-secure-network:
+    name: transcribo-secure-network
+
+volumes:
+  transcriber_data:
+  postgres_data:
+  huggingface_cache:
+  grafana_data:
+  loki_data:
+  tempo_data:

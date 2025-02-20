@@ -1,0 +1,28 @@
+# Core requirements
+nicegui>=1.4.29
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-dotenv>=1.0.1
+httpx>=0.28.1
+python-multipart>=0.0.7   # Updated to match nicegui requirement
+
+# File handling
+python-magic>=0.4.24
+aiofiles>=24.1.0
+
+# WebSocket support
+websockets>=11.0.3
+python-socketio>=5.12.1
+python-engineio>=4.11.2
+
+# OpenTelemetry integration
+opentelemetry-api>=1.23.0
+opentelemetry-sdk>=1.23.0
+opentelemetry-instrumentation-fastapi>=0.44b0
+opentelemetry-exporter-otlp-proto-http>=1.23.0
+opentelemetry-instrumentation-logging>=0.44b0
+
+# Utilities
+decorator>=5.1.1
+orjson>=3.9.15
+watchfiles>=0.21.0
