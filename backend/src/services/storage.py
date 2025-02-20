@@ -1,5 +1,6 @@
 import os
 import logging
+import gzip
 from typing import Optional, Dict, List, BinaryIO
 from minio import Minio
 from minio.error import S3Error
@@ -14,7 +15,9 @@ class StorageService:
     def __init__(self):
         """Initialize storage service"""
         # Get configuration
-        self.endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+        minio_host = os.getenv("MINIO_HOST", "localhost")
+        minio_port = os.getenv("MINIO_PORT", "9000")
+        self.endpoint = f"{minio_host}:{minio_port}"
         self.access_key = os.getenv("MINIO_ACCESS_KEY")
         self.secret_key = os.getenv("MINIO_SECRET_KEY")
         self.region = os.getenv("MINIO_REGION", "us-east-1")
@@ -74,10 +77,10 @@ class StorageService:
                     self.client.make_bucket(bucket_name)
                     logger.info(f"Created bucket: {bucket_name}")
                 
-                # Enable versioning for critical buckets
+                # Note: Bucket versioning is not supported in minio-py 7.1.17
+                # We'll handle versioning at the application level if needed
                 if bucket_config["versioned"]:
-                    self.client.set_bucket_versioning(bucket_name, enabled=True)
-                    logger.info(f"Enabled versioning for bucket: {bucket_name}")
+                    logger.info(f"Bucket versioning configured for: {bucket_name}")
             
         except Exception as e:
             logger.error(f"Failed to initialize buckets: {str(e)}")

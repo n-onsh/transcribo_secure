@@ -8,12 +8,13 @@ RUN apt-get update -qq && apt-get install -y -qq \
     libmagic-dev \
     postgresql-client \
     netcat-openbsd \
+    libffi-dev \
     > /dev/null 2>&1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt --quiet
+RUN pip install --no-cache-dir -r requirements.txt -v
 
 # Copy the entire backend directory (including wait-for-it.sh)
 COPY . .

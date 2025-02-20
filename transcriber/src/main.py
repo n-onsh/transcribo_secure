@@ -7,7 +7,7 @@ from pathlib import Path
 import os
 from typing import Optional
 import json
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 import tempfile
 
 # Configure logging
@@ -17,27 +17,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from typing import Any
+
 class Settings(BaseSettings):
-    BACKEND_API_URL: str = "http://backend-api:8080"
-    POLL_INTERVAL: int = 5  # seconds
-    MAX_RETRIES: int = 3
-    TEMP_DIR: str = "/tmp/transcriber"
-    HF_AUTH_TOKEN: str = ""
-    DEVICE: str = "cuda"
-    BATCH_SIZE: int = 32
+    # Application settings
+    backend_api_url: str = "http://backend:8080/api/v1"
+    poll_interval: int = 5  # seconds
+    max_retries: int = 3
+    temp_dir: str = "/tmp/transcriber"
+    hf_auth_token: str = ""
+    device: str = "cuda"
+    batch_size: int = 32
 
     class Config:
         env_file = ".env"
+        case_sensitive = False
+        extra = "ignore"  # Allow extra fields in the environment
 
 class TranscriberService:
     def __init__(self):
         self.settings = Settings()
         self.transcription_service = TranscriptionService(
-            device=self.settings.DEVICE,
-            batch_size=self.settings.BATCH_SIZE,
-            hf_token=self.settings.HF_AUTH_TOKEN
+            device=self.settings.device,
+            batch_size=self.settings.batch_size,
+            hf_token=self.settings.hf_auth_token
         )
-        self.temp_dir = Path(self.settings.TEMP_DIR)
+        self.temp_dir = Path(self.settings.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.running = False
 
@@ -55,18 +60,18 @@ class TranscriberService:
                     await self._process_job(job)
                 else:
                     # No job available, wait before polling again
-                    await asyncio.sleep(self.settings.POLL_INTERVAL)
+                    await asyncio.sleep(self.settings.poll_interval)
                     
             except Exception as e:
                 logger.error(f"Error in transcriber service: {str(e)}")
-                await asyncio.sleep(self.settings.POLL_INTERVAL)
+                await asyncio.sleep(self.settings.poll_interval)
 
     async def _get_next_job(self) -> Optional[dict]:
         """Poll the backend API for the next available job"""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.settings.BACKEND_API_URL}/api/v1/jobs/next"
+                    f"{self.settings.backend_api_url}/jobs/next"
                 )
                 if response.status_code == 200:
                     return response.json()
@@ -130,7 +135,7 @@ class TranscriberService:
         
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{self.settings.BACKEND_API_URL}/api/v1/files/{file_id}/download",
+                f"{self.settings.backend_api_url}/files/{file_id}/download",
                 timeout=None
             )
             response.raise_for_status()
@@ -144,7 +149,7 @@ class TranscriberService:
         """Upload transcription results to backend API"""
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{self.settings.BACKEND_API_URL}/api/v1/jobs/{job_id}/results",
+                f"{self.settings.backend_api_url}/jobs/{job_id}/results",
                 json=results
             )
             response.raise_for_status()
@@ -165,7 +170,7 @@ class TranscriberService:
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{self.settings.BACKEND_API_URL}/api/v1/jobs/{job_id}/status",
+                f"{self.settings.backend_api_url}/jobs/{job_id}/status",
                 json=data
             )
             response.raise_for_status()

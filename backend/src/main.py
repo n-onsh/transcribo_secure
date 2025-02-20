@@ -1,13 +1,16 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import asyncio
 import time
-from .routes import files, jobs, transcriber
+from .routes import files, jobs, transcriber, auth
 from .services.database import DatabaseService
 from .services.storage import StorageService
-from .middleware.auth import AzureADAuth
+from .middleware.auth import AuthMiddleware
 from .utils.logging import setup_logging, LogContext, get_logger
 import uuid
+import os
+import logging
 from typing import Dict
 
 # Setup logging
@@ -19,23 +22,36 @@ setup_logging(
 
 logger = logging.getLogger(__name__)
 
-# Initialize auth
-auth_handler = AzureADAuth()
+# Global auth handler
+auth_handler = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the FastAPI application"""
     try:
         # Initialize services
+        global auth_handler
+        auth_handler = AuthMiddleware()
         db = DatabaseService()
         storage = StorageService()
         
         # Initialize
         await db.initialize_database()
         await storage.init_buckets()
+        
         logger.info("Backend services initialized")
         
+        # Start background tasks
+        key_rotation_task = asyncio.create_task(auth_handler._rotate_key_periodically())
+        
         yield
+        
+        # Cancel background tasks
+        key_rotation_task.cancel()
+        try:
+            await key_rotation_task
+        except asyncio.CancelledError:
+            pass
         
         await db.close()
         logger.info("Backend services stopped")
@@ -111,21 +127,33 @@ async def get_current_user(request: Request = None) -> Dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     return request.state.user
 
-# Include routers with auth
+# Create auth dependency
+async def auth_dependency(request: Request):
+    if auth_handler is None:
+        raise HTTPException(status_code=500, detail="Auth handler not initialized")
+    return await auth_handler(request, lambda r: r)
+
+# Include auth router without auth dependency
+app.include_router(
+    auth.router,
+    prefix="/api/v1"
+)
+
+# Include other routers with auth
 app.include_router(
     files.router,
     prefix="/api/v1",
-    dependencies=[Depends(auth_handler), Depends(get_current_user)]
+    dependencies=[Depends(auth_dependency), Depends(get_current_user)]
 )
 app.include_router(
     jobs.router,
     prefix="/api/v1",
-    dependencies=[Depends(auth_handler), Depends(get_current_user)]
+    dependencies=[Depends(auth_dependency), Depends(get_current_user)]
 )
 app.include_router(
     transcriber.router,
     prefix="/api/v1/transcriber",
-    dependencies=[Depends(auth_handler), Depends(get_current_user)]
+    dependencies=[Depends(auth_dependency), Depends(get_current_user)]
 )
 
 @app.get("/health")
@@ -136,7 +164,7 @@ async def health_check():
         "timestamp": time.time()
     }
 
-@app.get("/api/v1/me", dependencies=[Depends(auth_handler)])
+@app.get("/api/v1/me", dependencies=[Depends(auth_dependency)])
 async def get_user_info(user: Dict = Depends(get_current_user)):
     """Get authenticated user info"""
     return user

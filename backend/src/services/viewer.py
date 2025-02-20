@@ -14,14 +14,18 @@ class ViewerService:
     def __init__(self):
         """Initialize viewer service"""
         # Get configuration
-        self.template_dir = Path(os.getenv("TEMPLATE_DIR", "templates"))
-        self.asset_dir = Path(os.getenv("ASSET_DIR", "assets"))
+        self.template_dir = Path(os.getenv("TEMPLATE_DIR", "src/templates"))
+        self.asset_dir = Path(os.getenv("ASSET_DIR", "src/assets"))
         
         # Initialize Jinja environment
         self.env = Environment(
             loader=FileSystemLoader(self.template_dir),
             autoescape=True
         )
+        
+        # Register filters
+        self.env.filters['format_timestamp'] = self._format_timestamp
+        self.env.filters['format_duration'] = self._format_duration
         
         # Load templates
         self.editor_template = self.env.get_template("editor.html")
@@ -322,6 +326,13 @@ class ViewerService:
 
     def _format_timestamp(self, seconds: float) -> str:
         """Format timestamp as HH:MM:SS"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        seconds = int(seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def _format_duration(self, seconds: float) -> str:
+        """Format duration as HH:MM:SS"""
         hours = int(seconds // 3600)
         minutes = int((seconds % 3600) // 60)
         seconds = int(seconds % 60)

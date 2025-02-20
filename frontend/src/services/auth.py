@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 class AuthService:
     def __init__(self):
         """Initialize MSAL authentication"""
-        self.client_id = os.getenv("AZURE_AD_CLIENT_ID")
-        self.tenant_id = os.getenv("AZURE_AD_TENANT_ID")
+        self.client_id = os.getenv("AZURE_CLIENT_ID")
+        self.tenant_id = os.getenv("AZURE_TENANT_ID")
         self.redirect_uri = os.getenv("FRONTEND_URL", "http://localhost:3000")
         
         if not all([self.client_id, self.tenant_id]):

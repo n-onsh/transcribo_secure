@@ -6,8 +6,8 @@ import os
 import json
 from .database import DatabaseService
 from .storage import StorageService
-from .transcription import TranscriptionService
-from ..models.job import Job, JobStatus, JobFilter, JobUpdate, Transcription
+import httpx
+from ..models.job import Job, JobStatus, JobPriority, JobFilter, JobUpdate, Transcription
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,8 @@ class JobManager:
         """Initialize job manager"""
         self.db = DatabaseService()
         self.storage = StorageService()
-        self.transcription = TranscriptionService()
+        # Transcriber service URL
+        self.transcriber_url = os.getenv("TRANSCRIBER_URL", "http://transcriber:8000")
         
         # Background tasks
         self.processing_task: Optional[asyncio.Task] = None
@@ -305,19 +306,26 @@ class JobManager:
                 "audio"
             )
             
-            # Transcribe
-            transcription = await self.transcription.transcribe(
-                audio_data,
-                progress_callback=lambda p: self._update_progress(job.id, p)
-            )
-            
-            # Store transcription
-            await self.storage.store_file(
-                job.user_id,
-                transcription.json().encode(),
-                f"{job.id}.json",
-                "transcription"
-            )
+            # Submit job to transcriber service
+            async with httpx.AsyncClient() as client:
+                # Upload audio file to transcriber
+                response = await client.post(
+                    f"{self.transcriber_url}/transcribe",
+                    files={"audio": audio_data},
+                    params={"job_id": job.id}
+                )
+                response.raise_for_status()
+                
+                # Get transcription result
+                transcription = response.json()
+                
+                # Store transcription
+                await self.storage.store_file(
+                    job.user_id,
+                    json.dumps(transcription).encode(),
+                    f"{job.id}.json",
+                    "transcription"
+                )
             
             # Mark complete
             job.complete()

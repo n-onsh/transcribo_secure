@@ -188,6 +188,11 @@ async def download_srt(job_id: str):
         logger.error(f"Failed to download SRT: {str(e)}")
         ui.notify("Failed to download SRT", type="error")
 
+@ui.page('/health')
+async def health():
+    """Health check endpoint"""
+    return "OK"
+
 # Start the application
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(

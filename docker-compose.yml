@@ -29,7 +29,7 @@ services:
     networks:
       - transcribo-secure-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:8080/ping"]
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -113,7 +113,10 @@ services:
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - HF_AUTH_TOKEN=${HF_AUTH_TOKEN}
       - MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - TRANSCRIBER_URL=http://transcriber:8000
+    command: ["./wait-for-it.sh", "-t", "30", "postgres:5432", "--", "./wait-for-it.sh", "-t", "30", "minio:9000", "--", "python", "-m", "src.main"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -150,14 +153,15 @@ services:
       - BACKEND_API_URL=http://backend:8080/api/v1
       - REFRESH_INTERVAL=${REFRESH_INTERVAL}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
     volumes:
       - "./frontend:/app"
       - "./.env:/app/.env:ro"
     networks:
       - transcribo-secure-network
     depends_on:
-      backend:
-        condition: service_started
       otel-collector:
         condition: service_started
     labels:
@@ -193,10 +197,10 @@ services:
     volumes:
       - "transcriber_data:/tmp/transcriber"
       - "huggingface_cache:/root/.cache/huggingface"
+      - "pip_cache:/root/.cache/pip"
+      - "torch_cache:/root/.cache/torch"
       - "./.env:/app/.env:ro"
     depends_on:
-      backend:
-        condition: service_started
       otel-collector:
         condition: service_started
     networks:
@@ -281,6 +285,8 @@ volumes:
   transcriber_data:
   postgres_data:
   huggingface_cache:
+  pip_cache:
+  torch_cache:
   grafana_data:
   loki_data:
   tempo_data:

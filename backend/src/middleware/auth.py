@@ -41,15 +41,16 @@ class AuthMiddleware:
             "/openapi.json"
         }
         
-        # Start key rotation task
+        # Initialize key rotation
         self.last_rotation = datetime.utcnow()
-        asyncio.create_task(self._rotate_key_periodically())
+        self._key_rotation_task = None
         
         logger.info("Auth middleware initialized")
 
-    async def __call__(self, request: Request, call_next):
+    async def __call__(self, request: Request):
         """Process request"""
         try:
+            # Apply rate limiting
             # Apply rate limiting
             client_ip = request.client.host if request.client else "unknown"
             allowed, wait_time = self.rate_limiter.is_allowed(client_ip)
@@ -62,7 +63,7 @@ class AuthMiddleware:
             
             # Skip auth for public paths
             if request.url.path in self.public_paths:
-                return await call_next(request)
+                return True
             
             # Get token from header
             auth = await self.security(request)
@@ -98,10 +99,7 @@ class AuthMiddleware:
                 "roles": payload.get("roles", [])
             }
             
-            # Process request
-            response = await call_next(request)
-            
-            return response
+            return True
             
         except HTTPException as e:
             raise

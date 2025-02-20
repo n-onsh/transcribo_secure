@@ -13,14 +13,14 @@ class DatabaseService:
     def __init__(self):
         """Initialize database service"""
         # Get configuration
-        self.host = os.getenv("DB_HOST", "localhost")
-        self.port = int(os.getenv("DB_PORT", "5432"))
-        self.database = os.getenv("DB_NAME", "transcribo")
-        self.user = os.getenv("DB_USER", "postgres")
-        self.password = os.getenv("DB_PASSWORD")
+        self.host = os.getenv("POSTGRES_HOST", "localhost")
+        self.port = int(os.getenv("POSTGRES_PORT", "5432"))
+        self.database = os.getenv("POSTGRES_DB", "transcribo")
+        self.user = os.getenv("POSTGRES_USER", "postgres")
+        self.password = os.getenv("POSTGRES_PASSWORD")
         
         if not self.password:
-            raise ValueError("DB_PASSWORD environment variable not set")
+            raise ValueError("POSTGRES_PASSWORD environment variable not set")
         
         # Initialize connection pool
         self.pool = None
