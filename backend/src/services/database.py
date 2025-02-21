@@ -27,17 +27,17 @@ class DatabaseService:
         self.database = os.getenv("POSTGRES_DB", "transcribo")
         self.user = os.getenv("POSTGRES_USER", "postgres")
         self.password = os.getenv("POSTGRES_PASSWORD")
-        
+
         if not self.password:
             raise ValueError("POSTGRES_PASSWORD environment variable not set")
-        
+
         # Initialize connection pool
         self.pool = None
-        
+
         logger.info("Database service initialized")
 
     @track_time(DB_OPERATION_DURATION, {"operation": "initialize"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "initialize"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "initialize", "error_type": "unknown"})
     async def initialize_database(self):
         """Initialize database connection and schema"""
         try:
@@ -51,15 +51,14 @@ class DatabaseService:
                 min_size=5,
                 max_size=20
             )
-            
+
             # Update connection metrics
             update_gauge(DB_CONNECTIONS, len(self.pool._holders))
-            
+
             # Initialize database schema
             await self.init_db()
-            
             logger.info("Database initialized")
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize database: {str(e)}")
             raise
@@ -83,7 +82,7 @@ class DatabaseService:
         return len(self.pool._holders) if self.pool else 0
 
     @track_time(DB_OPERATION_DURATION, {"operation": "create_tables"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "create_tables"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "create_tables", "error_type": "unknown"})
     async def _create_tables(self, conn):
         """Create database tables"""
         try:
@@ -102,7 +101,7 @@ class DatabaseService:
                     metadata JSONB NOT NULL DEFAULT '{}'
                 )
             """)
-            
+
             # Jobs table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -119,7 +118,7 @@ class DatabaseService:
                     metadata JSONB NOT NULL DEFAULT '{}'
                 )
             """)
-            
+
             # Vocabulary table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS vocabulary (
@@ -130,16 +129,16 @@ class DatabaseService:
                     UNIQUE (user_id, word)
                 )
             """)
-            
+
             logger.info("Database tables created")
-            
+
         except Exception as e:
             logger.error(f"Failed to create tables: {str(e)}")
             raise
 
     # User operations
     @track_time(DB_OPERATION_DURATION, {"operation": "create_user"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "create_user"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "create_user", "error_type": "unknown"})
     async def create_user(self, user: User) -> User:
         """Create new user"""
         async with self.pool.acquire() as conn:
@@ -153,11 +152,11 @@ class DatabaseService:
             """, user.id, user.email, user.name, user.hashed_password,
                 user.roles, user.created_at, user.updated_at,
                 user.settings, user.metadata)
-            
+
             return User.parse_obj(dict(row))
 
     @track_time(DB_OPERATION_DURATION, {"operation": "get_user"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "get_user"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "get_user", "error_type": "unknown"})
     async def get_user(self, user_id: str) -> Optional[User]:
         """Get user by ID"""
         async with self.pool.acquire() as conn:
@@ -168,7 +167,7 @@ class DatabaseService:
             return User.parse_obj(dict(row)) if row else None
 
     @track_time(DB_OPERATION_DURATION, {"operation": "get_user_by_email"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "get_user_by_email"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "get_user_by_email", "error_type": "unknown"})
     async def get_user_by_email(self, email: str) -> Optional[User]:
         """Get user by email"""
         async with self.pool.acquire() as conn:
@@ -179,7 +178,7 @@ class DatabaseService:
             return User.parse_obj(dict(row)) if row else None
 
     @track_time(DB_OPERATION_DURATION, {"operation": "update_user"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "update_user"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "update_user", "error_type": "unknown"})
     async def update_user(self, user: User) -> User:
         """Update user"""
         async with self.pool.acquire() as conn:
@@ -193,11 +192,11 @@ class DatabaseService:
             """, user.id, user.email, user.name, user.hashed_password,
                 user.roles, user.updated_at, user.last_login,
                 user.settings, user.metadata)
-            
+
             return User.parse_obj(dict(row))
 
     @track_time(DB_OPERATION_DURATION, {"operation": "delete_user"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "delete_user"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "delete_user", "error_type": "unknown"})
     async def delete_user(self, user_id: str):
         """Delete user"""
         async with self.pool.acquire() as conn:
@@ -207,7 +206,7 @@ class DatabaseService:
             )
 
     @track_time(DB_OPERATION_DURATION, {"operation": "list_users"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "list_users"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "list_users", "error_type": "unknown"})
     async def list_users(self) -> List[User]:
         """List all users"""
         async with self.pool.acquire() as conn:
@@ -216,7 +215,7 @@ class DatabaseService:
 
     # Job operations
     @track_time(DB_OPERATION_DURATION, {"operation": "create_job"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "create_job"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "create_job", "error_type": "unknown"})
     async def create_job(self, job: Job) -> Job:
         """Create new job"""
         async with self.pool.acquire() as conn:
@@ -230,11 +229,11 @@ class DatabaseService:
             """, job.id, job.user_id, job.file_name, job.file_size,
                 job.status, job.progress, job.created_at,
                 job.updated_at, job.metadata)
-            
+
             return Job.parse_obj(dict(row))
 
     @track_time(DB_OPERATION_DURATION, {"operation": "get_job"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "get_job"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "get_job", "error_type": "unknown"})
     async def get_job(self, job_id: str) -> Optional[Job]:
         """Get job by ID"""
         async with self.pool.acquire() as conn:
@@ -245,7 +244,7 @@ class DatabaseService:
             return Job.parse_obj(dict(row)) if row else None
 
     @track_time(DB_OPERATION_DURATION, {"operation": "update_job"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "update_job"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "update_job", "error_type": "unknown"})
     async def update_job(self, job: Job) -> Job:
         """Update job"""
         async with self.pool.acquire() as conn:
@@ -258,11 +257,11 @@ class DatabaseService:
                 RETURNING *
             """, job.id, job.status, job.progress, job.error,
                 job.updated_at, job.completed_at, job.metadata)
-            
+
             return Job.parse_obj(dict(row))
 
     @track_time(DB_OPERATION_DURATION, {"operation": "delete_job"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "delete_job"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "delete_job", "error_type": "unknown"})
     async def delete_job(self, job_id: str):
         """Delete job"""
         async with self.pool.acquire() as conn:
@@ -272,7 +271,7 @@ class DatabaseService:
             )
 
     @track_time(DB_OPERATION_DURATION, {"operation": "list_jobs"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "list_jobs"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "list_jobs", "error_type": "unknown"})
     async def list_jobs(
         self,
         user_id: Optional[str] = None,
@@ -285,7 +284,7 @@ class DatabaseService:
             # Build query
             query = ["SELECT * FROM jobs"]
             params = []
-            
+
             # Add filters
             filters = []
             if user_id:
@@ -294,10 +293,10 @@ class DatabaseService:
             if status:
                 params.append(status)
                 filters.append(f"status = ${len(params)}")
-            
+
             if filters:
                 query.append("WHERE " + " AND ".join(filters))
-            
+
             # Add pagination
             query.append("ORDER BY created_at DESC")
             if limit:
@@ -306,17 +305,17 @@ class DatabaseService:
             if offset:
                 params.append(offset)
                 query.append(f"OFFSET ${len(params)}")
-            
+
             # Execute query
             rows = await conn.fetch(" ".join(query), *params)
             return [Job.parse_obj(dict(row)) for row in rows]
 
     @track_time(DB_OPERATION_DURATION, {"operation": "cleanup_jobs"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "cleanup_jobs"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "cleanup_jobs", "error_type": "unknown"})
     async def cleanup_old_jobs(self, days: int):
         """Delete old completed jobs"""
         cutoff = datetime.utcnow() - timedelta(days=days)
-        
+
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 DELETE FROM jobs
@@ -326,7 +325,7 @@ class DatabaseService:
 
     # Vocabulary operations
     @track_time(DB_OPERATION_DURATION, {"operation": "add_vocabulary"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "add_vocabulary"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "add_vocabulary", "error_type": "unknown"})
     async def add_vocabulary_word(
         self,
         user_id: str,
@@ -339,11 +338,11 @@ class DatabaseService:
                 VALUES ($1, $2, $3)
                 ON CONFLICT (user_id, word) DO NOTHING
             """, str(uuid.uuid4()), user_id, word)
-            
+
             return await self.get_vocabulary(user_id)
 
     @track_time(DB_OPERATION_DURATION, {"operation": "remove_vocabulary"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "remove_vocabulary"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "remove_vocabulary", "error_type": "unknown"})
     async def remove_vocabulary_word(
         self,
         user_id: str,
@@ -355,11 +354,11 @@ class DatabaseService:
                 DELETE FROM vocabulary
                 WHERE user_id = $1 AND word = $2
             """, user_id, word)
-            
+
             return await self.get_vocabulary(user_id)
 
     @track_time(DB_OPERATION_DURATION, {"operation": "get_vocabulary"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "get_vocabulary"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "get_vocabulary", "error_type": "unknown"})
     async def get_vocabulary(self, user_id: str) -> VocabularyList:
         """Get user's vocabulary list"""
         async with self.pool.acquire() as conn:
@@ -369,7 +368,7 @@ class DatabaseService:
                 WHERE user_id = $1
                 ORDER BY added_at DESC
             """, user_id)
-            
+
             return VocabularyList(
                 user_id=user_id,
                 words=[{
@@ -379,7 +378,7 @@ class DatabaseService:
             )
 
     @track_time(DB_OPERATION_DURATION, {"operation": "clear_vocabulary"})
-    @track_errors(DB_OPERATION_ERRORS, {"operation": "clear_vocabulary"})
+    @track_errors(DB_OPERATION_ERRORS, {"operation": "clear_vocabulary", "error_type": "unknown"})
     async def clear_vocabulary(self, user_id: str):
         """Clear user's vocabulary"""
         async with self.pool.acquire() as conn:

@@ -1,6 +1,7 @@
 import os
 import logging
 import gzip
+import asyncio
 from typing import Optional, Dict, List, BinaryIO
 from minio import Minio
 from minio.error import S3Error
@@ -22,27 +23,6 @@ logger = logging.getLogger(__name__)
 class StorageService:
     def __init__(self):
         """Initialize storage service"""
-        # Get configuration
-        minio_host = os.getenv("MINIO_HOST", "localhost")
-        minio_port = os.getenv("MINIO_PORT", "9000")
-        self.endpoint = f"{minio_host}:{minio_port}"
-        self.access_key = os.getenv("MINIO_ACCESS_KEY")
-        self.secret_key = os.getenv("MINIO_SECRET_KEY")
-        self.region = os.getenv("MINIO_REGION", "us-east-1")
-        self.secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
-        
-        if not self.access_key or not self.secret_key:
-            raise ValueError("MinIO credentials not set")
-        
-        # Initialize client
-        self.client = Minio(
-            self.endpoint,
-            access_key=self.access_key,
-            secret_key=self.secret_key,
-            region=self.region,
-            secure=self.secure
-        )
-        
         # Define buckets and their settings
         self.buckets = {
             "audio": {
@@ -70,21 +50,39 @@ class StorageService:
                 "allowed_types": None  # Allow all types
             }
         }
+
+        # Get configuration
+        minio_host = os.getenv("MINIO_HOST", "localhost")
+        minio_port = os.getenv("MINIO_PORT", "9000")
+        self.endpoint = f"{minio_host}:{minio_port}"
+        self.access_key = os.getenv("MINIO_ROOT_USER")
+        self.secret_key = os.getenv("MINIO_ROOT_PASSWORD")
+        self.region = os.getenv("MINIO_REGION", "us-east-1")
+        self.secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
         
-        # Initialize buckets
-        self._init_buckets()
+        if not self.access_key or not self.secret_key:
+            raise ValueError("MinIO credentials not set")
         
-        logger.info("Storage service initialized")
+        # Initialize client
+        self.client = Minio(
+            self.endpoint,
+            access_key=self.access_key,
+            secret_key=self.secret_key,
+            region=self.region,
+            secure=self.secure
+        )
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "init", "bucket_name": "all"})
-    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "init", "bucket_name": "all", "error_type": "initialization"})
-    def _init_buckets(self):
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "init", "bucket_name": "all", "error_type": "unknown"})
+    async def _init_buckets(self):
         """Initialize storage buckets"""
         try:
             for bucket_config in self.buckets.values():
                 bucket_name = bucket_config["name"]
-                if not self.client.bucket_exists(bucket_name):
-                    self.client.make_bucket(bucket_name)
+                # Run blocking operations in a thread
+                exists = await asyncio.to_thread(self.client.bucket_exists, bucket_name)
+                if not exists:
+                    await asyncio.to_thread(self.client.make_bucket, bucket_name)
                     logger.info(f"Created bucket: {bucket_name}")
                 
                 # Note: Bucket versioning is not supported in minio-py 7.1.17
@@ -95,6 +93,7 @@ class StorageService:
         except Exception as e:
             logger.error(f"Failed to initialize buckets: {str(e)}")
             raise
+        
 
     def _get_object_path(self, user_id: str, file_name: str) -> str:
         """Get object path for user file"""
@@ -179,7 +178,8 @@ class StorageService:
             try:
                 # Upload file
                 object_path = self._get_object_path(user_id, file_name)
-                self.client.fput_object(
+                await asyncio.to_thread(
+                    self.client.fput_object,
                     bucket,
                     object_path,
                     temp_path
@@ -219,7 +219,8 @@ class StorageService:
             try:
                 # Download file
                 object_path = self._get_object_path(user_id, file_name)
-                self.client.fget_object(
+                await asyncio.to_thread(
+                    self.client.fget_object,
                     bucket,
                     object_path,
                     temp_path,
@@ -261,7 +262,11 @@ class StorageService:
             
             # Delete file
             object_path = self._get_object_path(user_id, file_name)
-            self.client.remove_object(bucket["name"], object_path)
+            await asyncio.to_thread(
+                self.client.remove_object,
+                bucket["name"],
+                object_path
+            )
             
             # Update storage metrics
             await self.update_bucket_size_metric(bucket_type)
@@ -292,9 +297,17 @@ class StorageService:
             # List objects
             prefix = f"{user_id}/"
             if include_versions and bucket_config["versioned"]:
-                objects = self.client.list_objects_versions(bucket, prefix=prefix)
+                objects = await asyncio.to_thread(
+                    self.client.list_objects_versions,
+                    bucket,
+                    prefix=prefix
+                )
             else:
-                objects = self.client.list_objects(bucket, prefix=prefix)
+                objects = await asyncio.to_thread(
+                    self.client.list_objects,
+                    bucket,
+                    prefix=prefix
+                )
             
             # Convert to list
             files = []
@@ -326,7 +339,11 @@ class StorageService:
             bucket = self.buckets[bucket_type]["name"]
             total_size = 0
             
-            objects = self.client.list_objects(bucket, recursive=True)
+            objects = await asyncio.to_thread(
+                self.client.list_objects,
+                bucket,
+                recursive=True
+            )
             for obj in objects:
                 total_size += obj.size
                 
@@ -353,13 +370,20 @@ class StorageService:
             bucket = self.buckets["temp"]["name"]
             
             # List objects
-            objects = self.client.list_objects(bucket)
+            objects = await asyncio.to_thread(
+                self.client.list_objects,
+                bucket
+            )
             
             # Delete old files
             cutoff = datetime.utcnow() - timedelta(hours=max_age)
             for obj in objects:
                 if obj.last_modified < cutoff:
-                    self.client.remove_object(bucket, obj.object_name)
+                    await asyncio.to_thread(
+                        self.client.remove_object,
+                        bucket,
+                        obj.object_name
+                    )
             
             # Update storage metrics
             await self.update_bucket_size_metric("temp")

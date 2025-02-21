@@ -22,5 +22,5 @@ COPY . .
 # Create logs directory and ensure proper permissions
 RUN mkdir -p logs && chmod 777 logs
 
-# Command to launch the API
-CMD ["python", "-m", "src.main"]
+# Command to launch the API with debug flags
+CMD ["python", "-X", "dev", "-X", "faulthandler", "-v", "-m", "src.main"]

@@ -15,13 +15,23 @@ router = APIRouter(
     tags=["transcriber"]
 )
 
-# Initialize services
-storage = StorageService()
-job_manager = JobManager()
-viewer_service = ViewerService()
+# Service dependencies
+async def get_storage() -> StorageService:
+    return StorageService()
+
+async def get_job_manager() -> JobManager:
+    return JobManager()
+
+async def get_viewer_service() -> ViewerService:
+    return ViewerService()
 
 @router.get("/{job_id}")
-async def get_transcription(job_id: str, request: Request) -> Dict:
+async def get_transcription(
+    job_id: str,
+    request: Request,
+    storage: StorageService = Depends(get_storage),
+    job_manager: JobManager = Depends(get_job_manager)
+) -> Dict:
     """Get transcription data with media URL"""
     try:
         # Get user from request state (set by auth middleware)
@@ -76,7 +86,12 @@ async def get_transcription(job_id: str, request: Request) -> Dict:
         raise HTTPException(status_code=500, detail="Failed to get transcription")
 
 @router.post("/{job_id}/save")
-async def save_transcription(job_id: str, request: Request) -> Dict:
+async def save_transcription(
+    job_id: str,
+    request: Request,
+    storage: StorageService = Depends(get_storage),
+    job_manager: JobManager = Depends(get_job_manager)
+) -> Dict:
     """Save transcription changes"""
     try:
         user = request.state.user
@@ -124,7 +139,9 @@ async def update_speaker(
     job_id: str,
     speaker_idx: int,
     name: str,
-    request: Request
+    request: Request,
+    storage: StorageService = Depends(get_storage),
+    job_manager: JobManager = Depends(get_job_manager)
 ) -> Dict:
     """Update speaker name"""
     try:
@@ -171,7 +188,9 @@ async def update_segment(
     job_id: str,
     segment_id: str,
     data: Dict,
-    request: Request
+    request: Request,
+    storage: StorageService = Depends(get_storage),
+    job_manager: JobManager = Depends(get_job_manager)
 ) -> Dict:
     """Update segment data"""
     try:
@@ -219,7 +238,13 @@ async def update_segment(
         raise HTTPException(status_code=500, detail="Failed to update segment")
 
 @router.delete("/{job_id}/segments/{segment_id}")
-async def delete_segment(job_id: str, segment_id: str, request: Request) -> Dict:
+async def delete_segment(
+    job_id: str,
+    segment_id: str,
+    request: Request,
+    storage: StorageService = Depends(get_storage),
+    job_manager: JobManager = Depends(get_job_manager)
+) -> Dict:
     """Delete a segment"""
     try:
         user = request.state.user
@@ -264,7 +289,9 @@ async def delete_segment(job_id: str, segment_id: str, request: Request) -> Dict
 async def add_segment(
     job_id: str,
     after_id: str,
-    request: Request
+    request: Request,
+    storage: StorageService = Depends(get_storage),
+    job_manager: JobManager = Depends(get_job_manager)
 ) -> Dict:
     """Add a new segment after the specified one"""
     try:

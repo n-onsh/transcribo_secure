@@ -114,15 +114,15 @@ def track_time(metric: Histogram, labels: Optional[dict] = None):
             start_time = time.time()
             try:
                 # Get bucket_type from args or kwargs
-                bucket_type = kwargs.get('bucket_type')
-                if bucket_type is None and args:
-                    bucket_type = args[2]  # Assuming bucket_type is the 3rd argument
-                
+                # bucket_type = kwargs.get('bucket_type') # <-- REMOVED problematic automatic extraction
+                # if bucket_type is None and args:
+                #     bucket_type = args[2]  # Assuming bucket_type is the 3rd argument # <-- REMOVED problematic line
+
                 # Update labels with actual bucket_type
                 current_labels = labels.copy() if labels else {}
-                if bucket_type and 'bucket_name' in current_labels and current_labels['bucket_name'] == 'unknown':
-                    current_labels['bucket_name'] = bucket_type
-                
+                # if bucket_type and 'bucket_name' in current_labels and current_labels['bucket_name'] == 'unknown': # <-- REMOVED bucket_type check
+                #     current_labels['bucket_name'] = bucket_type # <-- REMOVED bucket_type label update
+
                 result = await func(self, *args, **kwargs)
                 duration = time.time() - start_time
                 if current_labels:
@@ -132,8 +132,8 @@ def track_time(metric: Histogram, labels: Optional[dict] = None):
                 return result
             except Exception as e:
                 duration = time.time() - start_time
-                if current_labels:
-                    metric.labels(**current_labels).observe(duration)
+                if labels: # Use original labels if provided
+                    metric.labels(**labels).observe(duration)
                 else:
                     metric.observe(duration)
                 raise e
@@ -143,14 +143,14 @@ def track_time(metric: Histogram, labels: Optional[dict] = None):
             start_time = time.time()
             try:
                 # Get bucket_type from args or kwargs
-                bucket_type = kwargs.get('bucket_type')
-                if bucket_type is None and args:
-                    bucket_type = args[2]  # Assuming bucket_type is the 3rd argument
-                
+                # bucket_type = kwargs.get('bucket_type') # <-- REMOVED problematic automatic extraction
+                # if bucket_type is None and args:
+                #     bucket_type = args[2]  # Assuming bucket_type is the 3rd argument # <-- REMOVED problematic line
+
                 # Update labels with actual bucket_type
                 current_labels = labels.copy() if labels else {}
-                if bucket_type and 'bucket_name' in current_labels and current_labels['bucket_name'] == 'unknown':
-                    current_labels['bucket_name'] = bucket_type
+                # if bucket_type and 'bucket_name' in current_labels and current_labels['bucket_name'] == 'unknown': # <-- REMOVED bucket_type check
+                #     current_labels['bucket_name'] = bucket_type # <-- REMOVED bucket_type label update
                 
                 result = func(self, *args, **kwargs)
                 duration = time.time() - start_time
@@ -161,8 +161,8 @@ def track_time(metric: Histogram, labels: Optional[dict] = None):
                 return result
             except Exception as e:
                 duration = time.time() - start_time
-                if current_labels:
-                    metric.labels(**current_labels).observe(duration)
+                if labels: # Use original labels if provided
+                    metric.labels(**labels).observe(duration)
                 else:
                     metric.observe(duration)
                 raise e
@@ -179,14 +179,14 @@ def track_errors(counter: Counter, labels: Optional[dict] = None):
                 return await func(self, *args, **kwargs)
             except Exception as e:
                 # Get bucket_type from args or kwargs
-                bucket_type = kwargs.get('bucket_type')
-                if bucket_type is None and args:
-                    bucket_type = args[2]  # Assuming bucket_type is the 3rd argument
+                # bucket_type = kwargs.get('bucket_type') # <-- REMOVED problematic automatic extraction
+                # if bucket_type is None and args:
+                #     bucket_type = args[2]  # Assuming bucket_type is the 3rd argument # <-- REMOVED problematic line
                 
                 # Update labels with actual bucket_type and error type
                 error_labels = labels.copy() if labels else {}
-                if bucket_type and 'bucket_name' in error_labels and error_labels['bucket_name'] == 'unknown':
-                    error_labels['bucket_name'] = bucket_type
+                # if bucket_type and 'bucket_name' in error_labels and error_labels['bucket_name'] == 'unknown': # <-- REMOVED bucket_type check
+                #     error_labels['bucket_name'] = bucket_type # <-- REMOVED bucket_type label update
                 if error_labels.get('error_type') == 'unknown':
                     error_labels['error_type'] = e.__class__.__name__
                 counter.labels(**error_labels).inc()
@@ -198,14 +198,14 @@ def track_errors(counter: Counter, labels: Optional[dict] = None):
                 return func(self, *args, **kwargs)
             except Exception as e:
                 # Get bucket_type from args or kwargs
-                bucket_type = kwargs.get('bucket_type')
-                if bucket_type is None and args:
-                    bucket_type = args[2]  # Assuming bucket_type is the 3rd argument
+                # bucket_type = kwargs.get('bucket_type') # <-- REMOVED problematic automatic extraction
+                # if bucket_type is None and args:
+                #     bucket_type = args[2]  # Assuming bucket_type is the 3rd argument # <-- REMOVED problematic line
                 
                 # Update labels with actual bucket_type and error type
                 error_labels = labels.copy() if labels else {}
-                if bucket_type and 'bucket_name' in error_labels and error_labels['bucket_name'] == 'unknown':
-                    error_labels['bucket_name'] = bucket_type
+                # if bucket_type and 'bucket_name' in error_labels and error_labels['bucket_name'] == 'unknown': # <-- REMOVED bucket_type check
+                #     error_labels['bucket_name'] = bucket_type # <-- REMOVED bucket_type label update
                 if error_labels.get('error_type') == 'unknown':
                     error_labels['error_type'] = e.__class__.__name__
                 counter.labels(**error_labels).inc()

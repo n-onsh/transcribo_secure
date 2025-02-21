@@ -11,7 +11,7 @@ from .storage import StorageService
 logger = logging.getLogger(__name__)
 
 class ViewerService:
-    def __init__(self):
+    def __init__(self, storage: Optional[StorageService] = None):
         """Initialize viewer service"""
         # Get configuration
         self.template_dir = Path(os.getenv("TEMPLATE_DIR", "src/templates"))
@@ -32,7 +32,7 @@ class ViewerService:
         self.viewer_template = self.env.get_template("viewer.html")
         
         # Initialize storage
-        self.storage = StorageService()
+        self.storage = storage or StorageService()
         
         logger.info("Viewer service initialized")
 

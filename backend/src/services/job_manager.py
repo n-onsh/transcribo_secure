@@ -27,10 +27,10 @@ from ..utils.metrics import (
 logger = logging.getLogger(__name__)
 
 class JobManager:
-    def __init__(self):
+    def __init__(self, storage: Optional[StorageService] = None, db: Optional[DatabaseService] = None):
         """Initialize job manager"""
-        self.db = DatabaseService()
-        self.storage = StorageService()
+        self.db = db or DatabaseService()
+        self.storage = storage or StorageService()
         # Transcriber service URL
         self.transcriber_url = os.getenv("TRANSCRIBER_URL", "http://transcriber:8000")
         

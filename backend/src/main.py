@@ -33,11 +33,6 @@ SYSTEM_CPU_USAGE = Gauge(
     'transcribo_system_cpu_usage_percent',
     'System CPU usage percentage'
 )
-SYSTEM_MEMORY_USAGE = Gauge(
-    'transcribo_system_memory_usage_bytes',
-    'System memory usage in bytes',
-    ['type']  # used/total
-)
 SYSTEM_DISK_USAGE = Gauge(
     'transcribo_system_disk_usage_bytes',
     'System disk usage in bytes',
@@ -56,38 +51,57 @@ logger = logging.getLogger(__name__)
 # Global auth handler
 auth_handler = None
 
+# Global metrics
+SYSTEM_MEMORY_USAGE = Gauge(
+    'transcribo_system_memory_usage_bytes',
+    'System memory usage in bytes',
+    ['type']  # used/total
+)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the FastAPI application"""
     try:
+        logger.info("Starting service initialization...")
+        
         # Initialize services
         global auth_handler
         auth_handler = AuthMiddleware()
+        logger.info("Auth handler initialized")
+        
         db = DatabaseService()
+        logger.info("Database service instance created")
+        
         storage = StorageService()
-        
+        logger.info("Storage service instance created")
+
         # Initialize database and storage
+        logger.info("Initializing database...")
         await db.initialize_database()  # This will call init_db internally
-        await storage.init_buckets()
+        logger.info("Database initialized successfully")
         
+        logger.info("Initializing storage buckets...")
+        await storage._init_buckets()
+        logger.info("Storage buckets initialized successfully")
+
         # Initialize metrics
         update_gauge(DB_CONNECTIONS, await db.get_active_connections())
-        
+
         # Get storage usage for each bucket
         buckets = ["audio", "transcription"]
         for bucket in buckets:
             size = await storage.get_bucket_size(bucket)
             update_gauge(STORAGE_BYTES, size, {"bucket": bucket})
-        
+
         logger.info("Backend services initialized")
-        
+
         # Start background tasks
         key_rotation_task = asyncio.create_task(auth_handler._rotate_key_periodically())
         metrics_update_task = asyncio.create_task(update_metrics_periodically(db, storage))
         system_metrics_task = asyncio.create_task(update_system_metrics_periodically())
-        
+
         yield
-        
+
         # Cancel background tasks
         key_rotation_task.cancel()
         metrics_update_task.cancel()
@@ -98,10 +112,10 @@ async def lifespan(app: FastAPI):
             await system_metrics_task
         except asyncio.CancelledError:
             pass
-        
+
         await db.close()
         logger.info("Backend services stopped")
-        
+
     except Exception as e:
         logger.error(f"Startup/shutdown error: {str(e)}")
         raise
@@ -112,14 +126,14 @@ async def update_metrics_periodically(db: DatabaseService, storage: StorageServi
         try:
             # Update DB metrics
             update_gauge(DB_CONNECTIONS, await db.get_active_connections())
-            
+
             # Update storage metrics
             for bucket in ["audio", "transcription"]:
                 size = await storage.get_bucket_size(bucket)
                 update_gauge(STORAGE_BYTES, size, {"bucket": bucket})
-            
+
             await asyncio.sleep(60)  # Update every minute
-            
+
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -133,19 +147,19 @@ async def update_system_metrics_periodically():
             # CPU usage
             cpu_percent = psutil.cpu_percent(interval=1)
             SYSTEM_CPU_USAGE.set(cpu_percent)
-            
+
             # Memory usage
             memory = psutil.virtual_memory()
             SYSTEM_MEMORY_USAGE.labels(type="used").set(memory.used)
             SYSTEM_MEMORY_USAGE.labels(type="total").set(memory.total)
-            
+
             # Disk usage
             disk = psutil.disk_usage("/")
             SYSTEM_DISK_USAGE.labels(type="used").set(disk.used)
             SYSTEM_DISK_USAGE.labels(type="total").set(disk.total)
-            
+
             await asyncio.sleep(15)  # Update every 15 seconds
-            
+
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -155,7 +169,7 @@ async def update_system_metrics_periodically():
 async def check_service_health() -> Dict[str, Dict]:
     """Check health of all services"""
     services = {}
-    
+
     # Check database
     try:
         db = DatabaseService()
@@ -169,7 +183,7 @@ async def check_service_health() -> Dict[str, Dict]:
             "status": "unhealthy",
             "error": str(e)
         }
-    
+
     # Check storage
     try:
         storage = StorageService()
@@ -182,13 +196,13 @@ async def check_service_health() -> Dict[str, Dict]:
             "status": "unhealthy",
             "error": str(e)
         }
-    
+
     # Check system resources
     try:
         cpu_percent = psutil.cpu_percent(interval=1)
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
-        
+
         services["system"] = {
             "status": "healthy",
             "cpu_usage": cpu_percent,
@@ -208,7 +222,7 @@ async def check_service_health() -> Dict[str, Dict]:
             "status": "unhealthy",
             "error": str(e)
         }
-    
+
     return services
 
 def custom_openapi():
@@ -221,13 +235,13 @@ def custom_openapi():
         version="1.0.0",
         description="""
         Secure API for audio/video transcription with the following features:
-        
+
         - **Authentication**: JWT-based authentication for secure access
         - **File Management**: Upload and manage audio/video files
         - **Transcription**: Automated transcription with speaker diarization
         - **Editing**: Edit and refine transcription results
         - **Vocabulary**: Custom vocabulary management for better accuracy
-        
+
         For detailed documentation on each endpoint, see the descriptions below.
         """,
         routes=app.routes
@@ -310,7 +324,7 @@ async def logging_middleware(request: Request, call_next):
     """Add request logging with timing and context"""
     request_id = str(uuid.uuid4())
     start_time = time.time()
-    
+
     with LogContext(
         request_id=request_id,
         method=request.method,
@@ -318,9 +332,9 @@ async def logging_middleware(request: Request, call_next):
         client_host=request.client.host if request.client else None
     ):
         response = await call_next(request)
-        
+
         duration = time.time() - start_time
-        
+
         # Only log non-200 responses or slow requests
         if response.status_code != 200 or duration > 1.0:
             logger.info(
@@ -330,7 +344,7 @@ async def logging_middleware(request: Request, call_next):
                     "dur": f"{duration:.2f}s"
                 }
             )
-        
+
         return response
 
 # Configure CORS with security settings
@@ -345,10 +359,10 @@ app.mount("/metrics", metrics_app)
 # Dependency to get authenticated user
 async def get_current_user(request: Request = None) -> Dict:
     """Get authenticated user from request state
-    
+
     Returns:
         Dict: User information including ID and roles
-        
+
     Raises:
         AuthenticationError: If user is not authenticated
     """
@@ -450,27 +464,27 @@ app.include_router(
 async def health_check():
     """Enhanced health check endpoint"""
     services = await check_service_health()
-    
+
     # Check if any service is unhealthy
     status = "healthy"
     for service in services.values():
         if service["status"] == "unhealthy":
             status = "unhealthy"
             break
-    
+
     response = {
         "status": status,
         "timestamp": time.time(),
         "version": "1.0.0",
         "services": services
     }
-    
+
     if status == "unhealthy":
         return JSONResponse(
             status_code=503,
             content=response
         )
-    
+
     return response
 
 @app.get(
