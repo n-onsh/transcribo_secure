@@ -2,7 +2,7 @@
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'transcribo_user') THEN
-    CREATE USER transcribo_user WITH PASSWORD 'your_secure_password';
+    CREATE USER transcribo_user WITH PASSWORD 'transcribo_secure_dev_2024';
   END IF;
 END
 $$;

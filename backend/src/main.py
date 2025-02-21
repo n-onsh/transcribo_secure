@@ -1,32 +1,59 @@
-from fastapi import FastAPI, Request, Depends, status
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.utils import get_openapi
-from contextlib import asynccontextmanager
-import asyncio
-import time
-import psutil
-from prometheus_client import make_asgi_app, Gauge
-from .routes import files, jobs, transcriber, auth
-from .services.database import DatabaseService
-from .services.storage import StorageService
-from .middleware.auth import AuthMiddleware
-from .middleware.error_handler import error_handler_middleware
-from .middleware.metrics import MetricsMiddleware
-from .middleware.security import SecurityHeadersMiddleware, SecurityConfig
-from .middleware.rate_limiter import RateLimiter
-from .utils.logging import setup_logging, LogContext, get_logger
-from .utils.exceptions import AuthenticationError, ServiceUnavailableError
-from .utils.metrics import (
-    DB_CONNECTIONS,
-    STORAGE_BYTES,
-    update_gauge,
-    increment_counter
-)
+print("DEBUG: Starting main.py...")
+
+try:
+    print("DEBUG: Importing FastAPI modules...")
+    from fastapi import FastAPI, Request, Depends, status
+    from fastapi.responses import JSONResponse
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.openapi.utils import get_openapi
+    from contextlib import asynccontextmanager
+    print("DEBUG: FastAPI imports successful")
+
+    print("DEBUG: Importing system modules...")
+    import asyncio
+    import time
+    import psutil
+    import uuid
+    import os
+    import logging
+    from typing import Dict, List
+    print("DEBUG: System imports successful")
+
+    print("DEBUG: Importing prometheus modules...")
+    from prometheus_client import make_asgi_app, Gauge
+    print("DEBUG: Prometheus imports successful")
+
+    print("DEBUG: Importing local modules...")
+    from .routes import files, jobs, transcriber, auth
+    from .services.database import DatabaseService
+    from .services.storage import StorageService
+    from .services.encryption import EncryptionService
+    from .middleware.auth import AuthMiddleware
+    from .middleware.error_handler import error_handler_middleware
+    from .middleware.metrics import MetricsMiddleware
+    from .middleware.security import SecurityHeadersMiddleware, SecurityConfig
+    from .middleware.rate_limiter import RateLimiter
+    from .utils.logging import setup_logging, LogContext, get_logger
+    from .utils.exceptions import AuthenticationError, ServiceUnavailableError
+    from .utils.metrics import (
+        DB_CONNECTIONS,
+        STORAGE_BYTES,
+        update_gauge,
+        increment_counter
+    )
+    print("DEBUG: All imports successful")
+except Exception as e:
+    print(f"DEBUG: Import error: {str(e)}")
+    raise
+
+print("DEBUG: Starting global variables initialization...")
+
 import uuid
 import os
 import logging
 from typing import Dict, List
+
+print("DEBUG: Starting metrics initialization...")
 
 # System metrics
 SYSTEM_CPU_USAGE = Gauge(
@@ -39,6 +66,8 @@ SYSTEM_DISK_USAGE = Gauge(
     ['type']  # used/total
 )
 
+print("DEBUG: Starting logging setup...")
+
 # Setup logging
 setup_logging(
     level="INFO",
@@ -47,11 +76,16 @@ setup_logging(
 )
 
 logger = logging.getLogger(__name__)
+print("DEBUG: Logging setup complete")
+
+print("DEBUG: Initializing global variables...")
 
 # Global auth handler
 auth_handler = None
 
 # Global metrics
+print("DEBUG: Global variables initialized")
+
 SYSTEM_MEMORY_USAGE = Gauge(
     'transcribo_system_memory_usage_bytes',
     'System memory usage in bytes',
@@ -62,27 +96,48 @@ SYSTEM_MEMORY_USAGE = Gauge(
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the FastAPI application"""
     try:
+        print("DEBUG: Starting lifespan initialization...")
         logger.info("Starting service initialization...")
         
         # Initialize services
+        print("DEBUG: Initializing auth handler...")
         global auth_handler
         auth_handler = AuthMiddleware()
         logger.info("Auth handler initialized")
+        print("DEBUG: Auth handler initialized successfully")
         
+        print("DEBUG: Creating database service...")
         db = DatabaseService()
         logger.info("Database service instance created")
+        print("DEBUG: Database service created successfully")
         
+        print("DEBUG: Creating storage service...")
         storage = StorageService()
         logger.info("Storage service instance created")
+        print("DEBUG: Storage service created successfully")
+
+        print("DEBUG: Creating encryption service...")
+        try:
+            encryption = EncryptionService()
+            logger.info("Encryption service instance created")
+            print("DEBUG: Encryption service created successfully")
+        except Exception as e:
+            print(f"DEBUG: Failed to create encryption service: {str(e)}")
+            logger.error(f"Failed to create encryption service: {str(e)}")
+            raise
 
         # Initialize database and storage
+        print("DEBUG: Initializing database...")
         logger.info("Initializing database...")
         await db.initialize_database()  # This will call init_db internally
         logger.info("Database initialized successfully")
+        print("DEBUG: Database initialized successfully")
         
+        print("DEBUG: Initializing storage buckets...")
         logger.info("Initializing storage buckets...")
         await storage._init_buckets()
         logger.info("Storage buckets initialized successfully")
+        print("DEBUG: Storage buckets initialized successfully")
 
         # Initialize metrics
         update_gauge(DB_CONNECTIONS, await db.get_active_connections())
@@ -197,6 +252,19 @@ async def check_service_health() -> Dict[str, Dict]:
             "error": str(e)
         }
 
+    # Check encryption
+    try:
+        from .services.encryption import EncryptionService
+        encryption = EncryptionService()
+        services["encryption"] = {
+            "status": "healthy"
+        }
+    except Exception as e:
+        services["encryption"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+
     # Check system resources
     try:
         cpu_percent = psutil.cpu_percent(interval=1)
@@ -295,6 +363,8 @@ def custom_openapi():
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
+
+print("DEBUG: Creating FastAPI app...")
 
 app = FastAPI(
     title="Transcribo Backend API",
