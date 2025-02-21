@@ -13,9 +13,9 @@ class KeyVaultService:
     def __init__(self):
         """Initialize Key Vault service"""
         # Get configuration
-        self.vault_url = os.getenv("AZURE_KEY_VAULT_URL")
+        self.vault_url = os.getenv("AZURE_KEYVAULT_URL")
         if not self.vault_url:
-            raise ValueError("AZURE_KEY_VAULT_URL environment variable not set")
+            raise ValueError("AZURE_KEYVAULT_URL environment variable not set")
         
         # Initialize credential
         self.credential = DefaultAzureCredential()

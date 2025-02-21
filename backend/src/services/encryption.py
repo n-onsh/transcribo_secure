@@ -15,12 +15,12 @@ class EncryptionService:
     def __init__(self):
         """Initialize encryption service"""
         # Get configuration
-        self.key_vault_url = os.getenv("AZURE_KEY_VAULT_URL")
+        self.key_vault_url = os.getenv("AZURE_KEYVAULT_URL")
         self.key_name = os.getenv("ENCRYPTION_KEY_NAME", "data-encryption-key")
         self.salt = os.getenv("ENCRYPTION_SALT", "transcribo-salt").encode()
         
         if not self.key_vault_url:
-            raise ValueError("AZURE_KEY_VAULT_URL environment variable not set")
+            raise ValueError("AZURE_KEYVAULT_URL environment variable not set")
         
         # Initialize Key Vault client
         credential = DefaultAzureCredential()
