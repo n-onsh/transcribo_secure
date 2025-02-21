@@ -24,11 +24,8 @@ class AuthMiddleware:
         self.algorithm = "HS256"
         self.security = HTTPBearer()
         
-        # Initialize rate limiter
-        self.rate_limiter = RateLimiter(
-            window_size=60,  # 1 minute window
-            max_requests=100  # 100 requests per minute
-        )
+        # Initialize rate limiter with FastAPI app
+        self.rate_limiter = None  # Will be set when used in FastAPI middleware
         
         # Public paths that don't require authentication
         self.public_paths = {
@@ -50,16 +47,7 @@ class AuthMiddleware:
     async def __call__(self, request: Request):
         """Process request"""
         try:
-            # Apply rate limiting
-            # Apply rate limiting
-            client_ip = request.client.host if request.client else "unknown"
-            allowed, wait_time = self.rate_limiter.is_allowed(client_ip)
-            
-            if not allowed:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Too many requests. Please wait {wait_time} seconds."
-                )
+            # Rate limiting is now handled by the RateLimiter middleware
             
             # Skip auth for public paths
             if request.url.path in self.public_paths:

@@ -26,14 +26,13 @@ exporters:
     endpoint: http://loki:3100/loki/api/v1/push
     tls:
       insecure: true
-    labels:
-      container: container_name
-      service: service.name
-      level: level
-      event_id: event_id
-      trace_id: trace_id
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
 
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]

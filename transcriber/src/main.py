@@ -2,13 +2,34 @@ import asyncio
 import logging
 from datetime import datetime
 import httpx
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from .services.transcription import TranscriptionService
 from pathlib import Path
 import os
-from typing import Optional
+from typing import Optional, Any
 import json
 from pydantic_settings import BaseSettings
 import tempfile
+
+# Configure OpenTelemetry
+resource = Resource.create({"service.name": "transcriber"})
+tracer_provider = TracerProvider(resource=resource)
+otlp_exporter = OTLPSpanExporter(endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318/v1/traces"))
+tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+trace.set_tracer_provider(tracer_provider)
+
+# Initialize instrumentors
+HTTPXClientInstrumentor().instrument()
+LoggingInstrumentor().instrument()
+
+# Get tracer
+tracer = trace.get_tracer(__name__)
 
 # Configure logging
 logging.basicConfig(
@@ -16,8 +37,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-from typing import Any
 
 class Settings(BaseSettings):
     # Application settings
@@ -32,6 +51,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  # Allow extra fields in environment
 
 class TranscriberService:
     def __init__(self):
@@ -87,46 +107,58 @@ class TranscriberService:
         """Process a transcription job"""
         job_id = job['job_id']
         file_id = job['file_id']
-        logger.info(f"Processing job {job_id} for file {file_id}")
+        
+        job_temp_dir = self.temp_dir / job_id
+        
+        with tracer.start_as_current_span("process_job") as span:
+            span.set_attribute("job_id", job_id)
+            span.set_attribute("file_id", file_id)
+            logger.info(f"Processing job {job_id} for file {file_id}")
 
-        try:
-            # Update job status to processing
-            await self._update_job_status(job_id, "processing")
+            try:
+                # Update job status to processing
+                await self._update_job_status(job_id, "processing")
 
-            # Create temporary directory for this job
-            job_temp_dir = self.temp_dir / job_id
-            job_temp_dir.mkdir(exist_ok=True)
-            
-            # Download file
-            input_file = await self._download_file(file_id, job_temp_dir)
-            
-            # Perform transcription
-            transcription_result = await self.transcription_service.transcribe(
-                input_file,
-                job_id=job_id
-            )
+                # Create temporary directory for this job
+                job_temp_dir.mkdir(exist_ok=True)
+                
+                # Download file
+                with tracer.start_span("download_file") as download_span:
+                    download_span.set_attribute("file_id", file_id)
+                    input_file = await self._download_file(file_id, job_temp_dir)
+                
+                # Perform transcription
+                with tracer.start_span("transcribe") as transcribe_span:
+                    transcribe_span.set_attribute("job_id", job_id)
+                    transcription_result = await self.transcription_service.transcribe(
+                        input_file,
+                        job_id=job_id
+                    )
 
-            # Upload results
-            await self._upload_results(job_id, transcription_result)
-            
-            # Update job status to completed
-            await self._update_job_status(job_id, "completed")
-            
-            logger.info(f"Successfully completed job {job_id}")
-            
-        except Exception as e:
-            logger.error(f"Error processing job {job_id}: {str(e)}")
-            await self._update_job_status(
-                job_id,
-                "failed",
-                error_message=str(e)
-            )
-        finally:
-            # Cleanup temporary files
-            if job_temp_dir.exists():
-                for file in job_temp_dir.glob("*"):
-                    file.unlink()
-                job_temp_dir.rmdir()
+                # Upload results
+                with tracer.start_span("upload_results") as upload_span:
+                    upload_span.set_attribute("job_id", job_id)
+                    await self._upload_results(job_id, transcription_result)
+                
+                # Update job status to completed
+                await self._update_job_status(job_id, "completed")
+                
+                logger.info(f"Successfully completed job {job_id}")
+                
+            except Exception as e:
+                logger.error(f"Error processing job {job_id}: {str(e)}")
+                await self._update_job_status(
+                    job_id,
+                    "failed",
+                    error_message=str(e)
+                )
+                
+            finally:
+                # Cleanup temporary files
+                if job_temp_dir.exists():
+                    for file in job_temp_dir.glob("*"):
+                        file.unlink()
+                    job_temp_dir.rmdir()
 
     async def _download_file(self, file_id: str, temp_dir: Path) -> Path:
         """Download file from backend API"""

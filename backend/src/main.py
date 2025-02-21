@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, Depends, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from .middleware.auth import AuthMiddleware
 from .middleware.error_handler import error_handler_middleware
 from .middleware.metrics import MetricsMiddleware
 from .middleware.security import SecurityHeadersMiddleware, SecurityConfig
+from .middleware.rate_limiter import RateLimiter
 from .utils.logging import setup_logging, LogContext, get_logger
 from .utils.exceptions import AuthenticationError, ServiceUnavailableError
 from .utils.metrics import (
@@ -64,8 +66,8 @@ async def lifespan(app: FastAPI):
         db = DatabaseService()
         storage = StorageService()
         
-        # Initialize
-        await db.initialize_database()
+        # Initialize database and storage
+        await db.initialize_database()  # This will call init_db internally
         await storage.init_buckets()
         
         # Initialize metrics
@@ -300,6 +302,7 @@ metrics_app = make_asgi_app()
 app.middleware("http")(error_handler_middleware)  # First to catch all errors
 app.middleware("http")(SecurityHeadersMiddleware)  # Then security headers
 app.middleware("http")(MetricsMiddleware)  # Then metrics
+app.add_middleware(RateLimiter)  # Add rate limiting
 
 # Add logging middleware
 @app.middleware("http")
@@ -464,7 +467,7 @@ async def health_check():
     
     if status == "unhealthy":
         return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            status_code=503,
             content=response
         )
     

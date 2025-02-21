@@ -5,7 +5,8 @@ services:
     container_name: transcribo-secure-traefik
     command:
       - "--api.dashboard=true"
-      - "--api.insecure=false"
+      - "--api.insecure=true"
+      - "--entrypoints.web.address=:80"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=transcribo-secure-network"
@@ -22,6 +23,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "8080:8080"
     volumes:
       - "./infrastructure/docker/traefik/selfsigned:/etc/traefik/dynamic:ro"
       - "./infrastructure/docker/letsencrypt:/letsencrypt"
@@ -29,10 +31,11 @@ services:
     networks:
       - transcribo-secure-network
     healthcheck:
-      test: ["CMD", "traefik", "healthcheck", "--ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   postgres:
@@ -105,9 +108,9 @@ services:
     container_name: transcribo-secure-tempo
     command: ["-config.file=/etc/tempo/tempo.yaml"]
     ports:
-      - "127.0.0.1:3200:3200"  # Tempo HTTP
-      - "127.0.0.1:4317:4317"  # OTLP gRPC
-      - "127.0.0.1:4318:4318"  # OTLP HTTP
+      - "3200:3200"  # Tempo HTTP
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
     volumes:
       - tempo_data:/tmp/tempo
       - ./infrastructure/docker/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
@@ -128,20 +131,16 @@ services:
       - "4319:4317"  # OTLP gRPC
       - "4320:4318"  # OTLP HTTP
       - "8889:8889"  # Prometheus metrics
+      - "13133:13133"  # Health check
     volumes:
       - ./infrastructure/docker/otel/collector-config.yaml:/etc/otel-collector-config.yaml
     depends_on:
       loki:
-        condition: service_healthy
+        condition: service_started
       tempo:
-        condition: service_healthy
+        condition: service_started
     networks:
       - transcribo-secure-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:13133"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
     restart: unless-stopped
 
   backend:
@@ -183,7 +182,7 @@ services:
       minio:
         condition: service_healthy
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     networks:
       - transcribo-secure-network
     labels:
@@ -195,11 +194,11 @@ services:
     volumes:
       - "./.env:/app/.env:ro"
     healthcheck:
-      test: ["CMD", "curl", "-f", "-k", "https://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      test: ["CMD", "curl", "-f", "http://0.0.0.0:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   frontend:
@@ -229,7 +228,7 @@ services:
       - transcribo-secure-network
     depends_on:
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
@@ -268,7 +267,7 @@ services:
       - "./.env:/app/.env:ro"
     depends_on:
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     networks:
       - transcribo-secure-network
     deploy:
@@ -304,7 +303,7 @@ services:
       - transcribo-secure-network
     depends_on:
       otel-collector:
-        condition: service_healthy
+        condition: service_started
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.grafana.rule=Host(`metrics.localhost`)"

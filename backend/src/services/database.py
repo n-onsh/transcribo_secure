@@ -39,7 +39,7 @@ class DatabaseService:
     @track_time(DB_OPERATION_DURATION, {"operation": "initialize"})
     @track_errors(DB_OPERATION_ERRORS, {"operation": "initialize"})
     async def initialize_database(self):
-        """Initialize database connection and tables"""
+        """Initialize database connection and schema"""
         try:
             # Create connection pool
             self.pool = await asyncpg.create_pool(
@@ -52,18 +52,24 @@ class DatabaseService:
                 max_size=20
             )
             
-            # Create tables
-            async with self.pool.acquire() as conn:
-                await self._create_tables(conn)
-            
             # Update connection metrics
             update_gauge(DB_CONNECTIONS, len(self.pool._holders))
+            
+            # Initialize database schema
+            await self.init_db()
             
             logger.info("Database initialized")
             
         except Exception as e:
             logger.error(f"Failed to initialize database: {str(e)}")
             raise
+
+    async def init_db(self):
+        """Initialize database schema (deprecated - use initialize_database instead)"""
+        if not self.pool:
+            raise RuntimeError("Database pool not initialized")
+        async with self.pool.acquire() as conn:
+            await self._create_tables(conn)
 
     async def close(self):
         """Close database connection"""
