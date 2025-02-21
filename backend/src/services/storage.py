@@ -8,6 +8,14 @@ from datetime import datetime, timedelta
 import tempfile
 import shutil
 from pathlib import Path
+from ..utils.metrics import (
+    STORAGE_OPERATION_DURATION,
+    STORAGE_OPERATION_ERRORS,
+    STORAGE_BYTES,
+    track_time,
+    track_errors,
+    update_gauge
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +76,8 @@ class StorageService:
         
         logger.info("Storage service initialized")
 
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "init", "bucket_name": "all"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "init", "bucket_name": "all", "error_type": "initialization"})
     def _init_buckets(self):
         """Initialize storage buckets"""
         try:
@@ -138,6 +148,8 @@ class StorageService:
             logger.error(f"Data decompression failed: {str(e)}")
             raise
 
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "store", "bucket_name": "unknown"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "store", "bucket_name": "unknown", "error_type": "unknown"})
     async def store_file(
         self,
         user_id: str,
@@ -173,6 +185,9 @@ class StorageService:
                     temp_path
                 )
                 
+                # Update storage metrics
+                await self.update_bucket_size_metric(bucket_type)
+                
                 logger.info(f"Stored file {file_name} for user {user_id}")
                 
             finally:
@@ -183,6 +198,8 @@ class StorageService:
             logger.error(f"Failed to store file: {str(e)}")
             raise
 
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "retrieve", "bucket_name": "unknown"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "retrieve", "bucket_name": "unknown", "error_type": "unknown"})
     async def retrieve_file(
         self,
         user_id: str,
@@ -227,6 +244,8 @@ class StorageService:
             logger.error(f"Failed to retrieve file: {str(e)}")
             raise
 
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "delete", "bucket_name": "unknown"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "delete", "bucket_name": "unknown", "error_type": "unknown"})
     async def delete_file(
         self,
         user_id: str,
@@ -242,7 +261,10 @@ class StorageService:
             
             # Delete file
             object_path = self._get_object_path(user_id, file_name)
-            self.client.remove_object(bucket, object_path)
+            self.client.remove_object(bucket["name"], object_path)
+            
+            # Update storage metrics
+            await self.update_bucket_size_metric(bucket_type)
             
             logger.info(f"Deleted file {file_name} for user {user_id}")
             
@@ -250,6 +272,8 @@ class StorageService:
             logger.error(f"Failed to delete file: {str(e)}")
             raise
 
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "list", "bucket_name": "unknown"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "list", "bucket_name": "unknown", "error_type": "unknown"})
     async def list_files(
         self,
         user_id: str,
@@ -296,87 +320,37 @@ class StorageService:
             logger.error(f"Failed to list files: {str(e)}")
             raise
 
-    async def get_presigned_url(
-        self,
-        user_id: str,
-        file_name: str,
-        bucket_type: str,
-        expires_in: int = 3600
-    ) -> str:
-        """Get presigned URL for file"""
+    async def get_bucket_size(self, bucket_type: str) -> int:
+        """Get total size of bucket in bytes"""
         try:
-            # Get bucket
-            bucket = self.buckets.get(bucket_type)
-            if not bucket:
-                raise ValueError(f"Invalid bucket type: {bucket_type}")
+            bucket = self.buckets[bucket_type]["name"]
+            total_size = 0
             
-            # Get URL
-            object_path = self._get_object_path(user_id, file_name)
-            url = self.client.presigned_get_object(
-                bucket,
-                object_path,
-                expires=timedelta(seconds=expires_in)
-            )
-            
-            return url
+            objects = self.client.list_objects(bucket, recursive=True)
+            for obj in objects:
+                total_size += obj.size
+                
+            return total_size
             
         except Exception as e:
-            logger.error(f"Failed to get presigned URL: {str(e)}")
-            raise
+            logger.error(f"Failed to get bucket size: {str(e)}")
+            return 0
 
-    async def copy_file(
-        self,
-        user_id: str,
-        file_name: str,
-        source_bucket: str,
-        dest_bucket: str
-    ):
-        """Copy file between buckets"""
+    async def update_bucket_size_metric(self, bucket_type: str):
+        """Update storage metrics for bucket"""
         try:
-            # Get buckets
-            source = self.buckets.get(source_bucket)
-            dest = self.buckets.get(dest_bucket)
-            if not source or not dest:
-                raise ValueError("Invalid bucket type")
-            
-            # Copy file
-            object_path = self._get_object_path(user_id, file_name)
-            self.client.copy_object(
-                dest,
-                object_path,
-                f"{source}/{object_path}"
-            )
-            
-            logger.info(f"Copied file {file_name} for user {user_id}")
-            
+            size = await self.get_bucket_size(bucket_type)
+            update_gauge(STORAGE_BYTES, size, {"bucket_name": bucket_type})
         except Exception as e:
-            logger.error(f"Failed to copy file: {str(e)}")
-            raise
+            logger.error(f"Failed to update storage metrics: {str(e)}")
 
-    async def move_file(
-        self,
-        user_id: str,
-        file_name: str,
-        source_bucket: str,
-        dest_bucket: str
-    ):
-        """Move file between buckets"""
-        try:
-            # Copy file
-            await self.copy_file(user_id, file_name, source_bucket, dest_bucket)
-            
-            # Delete original
-            await self.delete_file(user_id, file_name, source_bucket)
-            
-        except Exception as e:
-            logger.error(f"Failed to move file: {str(e)}")
-            raise
-
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "cleanup", "bucket_name": "temp"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "cleanup", "bucket_name": "temp", "error_type": "unknown"})
     async def cleanup_temp_files(self, max_age: int = 24):
         """Clean up old temp files"""
         try:
             # Get temp bucket
-            bucket = self.buckets["temp"]
+            bucket = self.buckets["temp"]["name"]
             
             # List objects
             objects = self.client.list_objects(bucket)
@@ -386,6 +360,9 @@ class StorageService:
             for obj in objects:
                 if obj.last_modified < cutoff:
                     self.client.remove_object(bucket, obj.object_name)
+            
+            # Update storage metrics
+            await self.update_bucket_size_metric("temp")
             
         except Exception as e:
             logger.error(f"Failed to cleanup temp files: {str(e)}")

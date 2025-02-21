@@ -1,76 +1,250 @@
 from enum import Enum, IntEnum
 from typing import Optional, Dict, List
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, constr
 from datetime import datetime, timedelta
-from datetime import datetime
 import uuid
+from .base import BaseModelWithTimestamps, ErrorResponse
+
+# Custom types
+FileName = constr(min_length=1, max_length=255)
 
 class TranscriptionOptions(BaseModel):
-    """Transcription options model"""
-    vocabulary: Optional[List[str]] = Field(default_factory=list)
-    generate_srt: bool = Field(default=True)
+    """Configuration options for transcription processing"""
+    vocabulary: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Custom vocabulary words to improve recognition",
+        example=["Kubernetes", "FastAPI", "PostgreSQL"]
+    )
+    generate_srt: bool = Field(
+        default=True,
+        description="Whether to generate SRT subtitle file",
+        example=True
+    )
 
 class JobPriority(IntEnum):
-    """Job priority enum"""
+    """Priority levels for job processing"""
     LOW = 0
     NORMAL = 1
     HIGH = 2
     URGENT = 3
 
+    @classmethod
+    def get_description(cls, value: int) -> str:
+        """Get human-readable description of priority level"""
+        descriptions = {
+            cls.LOW: "Background processing, no urgency",
+            cls.NORMAL: "Standard processing priority",
+            cls.HIGH: "Expedited processing",
+            cls.URGENT: "Immediate processing required"
+        }
+        return descriptions.get(value, "Unknown priority")
+
 class JobStatus(str, Enum):
-    """Job status enum"""
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
+    """Possible states of a transcription job"""
+    PENDING = "pending"      # Job is queued for processing
+    PROCESSING = "processing"  # Job is currently being processed
+    COMPLETED = "completed"   # Job has finished successfully
+    FAILED = "failed"        # Job encountered an error
+    CANCELLED = "cancelled"   # Job was cancelled by user
+
+    @classmethod
+    def get_description(cls, value: str) -> str:
+        """Get human-readable description of status"""
+        descriptions = {
+            cls.PENDING: "Waiting to be processed",
+            cls.PROCESSING: "Currently being transcribed",
+            cls.COMPLETED: "Transcription completed successfully",
+            cls.FAILED: "Failed to complete transcription",
+            cls.CANCELLED: "Transcription cancelled by user"
+        }
+        return descriptions.get(value, "Unknown status")
 
 class Speaker(BaseModel):
-    """Speaker model"""
-    name: str = Field(default="")
-    language: Optional[str] = Field(default=None)
-    confidence: Optional[float] = Field(default=None)
+    """Represents a speaker in the transcription"""
+    name: str = Field(
+        default="",
+        description="Name or identifier of the speaker",
+        example="Speaker 1"
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="Primary language of the speaker",
+        example="en-US"
+    )
+    confidence: Optional[float] = Field(
+        default=None,
+        description="Confidence score of speaker identification",
+        ge=0.0,
+        le=1.0,
+        example=0.95
+    )
 
 class Segment(BaseModel):
-    """Segment model"""
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    start: float
-    end: float
-    text: str
-    speaker_idx: int
-    is_foreign_language: bool = Field(default=False)
-    language: Optional[str] = Field(default=None)
-    confidence: Optional[float] = Field(default=None)
-    words: Optional[List[Dict]] = Field(default_factory=list)
+    """Represents a segment of transcribed speech"""
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique identifier for the segment"
+    )
+    start: float = Field(
+        ...,
+        description="Start time of the segment in seconds",
+        ge=0.0,
+        example=10.5
+    )
+    end: float = Field(
+        ...,
+        description="End time of the segment in seconds",
+        ge=0.0,
+        example=15.7
+    )
+    text: str = Field(
+        ...,
+        description="Transcribed text for this segment",
+        example="Hello, welcome to the meeting."
+    )
+    speaker_idx: int = Field(
+        ...,
+        description="Index of the speaker in speakers array",
+        ge=0,
+        example=0
+    )
+    is_foreign_language: bool = Field(
+        default=False,
+        description="Whether this segment is in a different language",
+        example=False
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="Detected language code for this segment",
+        example="en-US"
+    )
+    confidence: Optional[float] = Field(
+        default=None,
+        description="Confidence score of the transcription",
+        ge=0.0,
+        le=1.0,
+        example=0.92
+    )
+    words: Optional[List[Dict]] = Field(
+        default_factory=list,
+        description="Word-level timing and confidence information"
+    )
+
+    @validator("end")
+    def validate_end_time(cls, v, values):
+        """Validate end time is after start time"""
+        if "start" in values and v <= values["start"]:
+            raise ValueError("End time must be after start time")
+        return v
 
 class Transcription(BaseModel):
-    """Transcription model"""
-    speakers: List[Speaker] = Field(default_factory=list)
-    segments: List[Segment] = Field(default_factory=list)
-    language: Optional[str] = Field(default=None)
-    duration: Optional[float] = Field(default=None)
-    word_count: Optional[int] = Field(default=None)
-    metadata: Dict = Field(default_factory=dict)
+    """Complete transcription result"""
+    speakers: List[Speaker] = Field(
+        default_factory=list,
+        description="List of speakers in the transcription"
+    )
+    segments: List[Segment] = Field(
+        default_factory=list,
+        description="List of transcribed segments"
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="Primary language of the transcription",
+        example="en-US"
+    )
+    duration: Optional[float] = Field(
+        default=None,
+        description="Total duration in seconds",
+        ge=0.0,
+        example=120.5
+    )
+    word_count: Optional[int] = Field(
+        default=None,
+        description="Total number of words",
+        ge=0,
+        example=250
+    )
+    metadata: Dict = Field(
+        default_factory=dict,
+        description="Additional metadata about the transcription"
+    )
 
-class Job(BaseModel):
-    """Job model"""
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: str
-    file_name: str
-    file_size: int
-    duration: Optional[float] = Field(default=None)
-    status: JobStatus = Field(default=JobStatus.PENDING)
-    priority: JobPriority = Field(default=JobPriority.NORMAL)
-    progress: float = Field(default=0.0)
-    error: Optional[str] = Field(default=None)
-    retry_count: int = Field(default=0)
-    max_retries: int = Field(default=3)
-    next_retry_at: Optional[datetime] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    completed_at: Optional[datetime] = Field(default=None)
-    cancelled_at: Optional[datetime] = Field(default=None)
-    metadata: Dict = Field(default_factory=dict)
+class Job(BaseModelWithTimestamps):
+    """Transcription job"""
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique identifier for the job"
+    )
+    user_id: str = Field(
+        ...,
+        description="ID of the user who created the job",
+        example="user123"
+    )
+    file_name: FileName = Field(
+        ...,
+        description="Name of the audio/video file",
+        example="meeting-2024-02-21.mp4"
+    )
+    file_size: int = Field(
+        ...,
+        description="Size of the file in bytes",
+        gt=0,
+        example=1048576
+    )
+    duration: Optional[float] = Field(
+        default=None,
+        description="Duration of the media in seconds",
+        ge=0.0,
+        example=300.5
+    )
+    status: JobStatus = Field(
+        default=JobStatus.PENDING,
+        description="Current status of the job"
+    )
+    priority: JobPriority = Field(
+        default=JobPriority.NORMAL,
+        description="Processing priority of the job"
+    )
+    progress: float = Field(
+        default=0.0,
+        description="Processing progress (0-100)",
+        ge=0.0,
+        le=100.0,
+        example=45.5
+    )
+    error: Optional[str] = Field(
+        default=None,
+        description="Error message if job failed",
+        example="Failed to process audio: Invalid format"
+    )
+    retry_count: int = Field(
+        default=0,
+        description="Number of retry attempts",
+        ge=0,
+        example=1
+    )
+    max_retries: int = Field(
+        default=3,
+        description="Maximum number of retry attempts",
+        gt=0,
+        example=3
+    )
+    next_retry_at: Optional[datetime] = Field(
+        default=None,
+        description="Timestamp for next retry attempt"
+    )
+    completed_at: Optional[datetime] = Field(
+        default=None,
+        description="Timestamp when job completed"
+    )
+    cancelled_at: Optional[datetime] = Field(
+        default=None,
+        description="Timestamp when job was cancelled"
+    )
+    metadata: Dict = Field(
+        default_factory=dict,
+        description="Additional metadata about the job"
+    )
 
     @validator("priority")
     def validate_priority(cls, v):

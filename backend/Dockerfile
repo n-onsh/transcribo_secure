@@ -2,12 +2,12 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install build tools, dependencies, and netcat for wait-for-it.sh
+# Install build tools and dependencies
 RUN apt-get update -qq && apt-get install -y -qq \
     gcc \
     libmagic-dev \
     postgresql-client \
-    netcat-openbsd \
+    curl \
     libffi-dev \
     > /dev/null 2>&1 \
     && rm -rf /var/lib/apt/lists/*
@@ -16,11 +16,11 @@ RUN apt-get update -qq && apt-get install -y -qq \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt -v
 
-# Copy the entire backend directory (including wait-for-it.sh)
+# Copy the entire backend directory
 COPY . .
 
-# Ensure the wait-for-it.sh script is executable
-RUN chmod +x wait-for-it.sh
+# Create logs directory and ensure proper permissions
+RUN mkdir -p logs && chmod 777 logs
 
-# Command: wait for the Postgres service then launch the API
-CMD ["./wait-for-it.sh", "-t", "30", "postgres:5432", "--", "python", "-m", "src.main"]
+# Command to launch the API
+CMD ["python", "-m", "src.main"]

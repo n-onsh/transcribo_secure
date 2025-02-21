@@ -8,7 +8,21 @@ from .database import DatabaseService
 from .storage import StorageService
 import httpx
 from ..models.job import Job, JobStatus, JobPriority, JobFilter, JobUpdate, Transcription
-from fastapi import HTTPException
+from ..utils.exceptions import (
+    ResourceNotFoundError,
+    ResourceConflictError,
+    TranscriptionError
+)
+from ..utils.metrics import (
+    JOBS_TOTAL,
+    JOB_PROCESSING_DURATION,
+    JOB_QUEUE_SIZE,
+    JOB_RETRY_COUNT,
+    track_time,
+    track_errors,
+    update_gauge,
+    increment_counter
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +94,7 @@ class JobManager:
             logger.error(f"Failed to stop job manager: {str(e)}")
             raise
 
+    @track_time(JOB_PROCESSING_DURATION, {"operation": "create"})
     async def create_job(
         self,
         user_id: str,
@@ -110,6 +125,10 @@ class JobManager:
             # Save job
             job = await self.db.create_job(job)
             
+            # Update metrics
+            increment_counter(JOBS_TOTAL, {"status": job.status})
+            update_gauge(JOB_QUEUE_SIZE, 1, {"priority": job.priority.name})
+            
             logger.info(f"Created job {job.id} for user {user_id}")
             return job
             
@@ -117,16 +136,17 @@ class JobManager:
             logger.error(f"Failed to create job: {str(e)}")
             raise
 
+    @track_time(JOB_PROCESSING_DURATION, {"operation": "get"})
     async def get_job(self, job_id: str, user_id: Optional[str] = None) -> Optional[Job]:
         """Get job by ID with optional user verification"""
         try:
             job = await self.db.get_job(job_id)
             if not job:
-                return None
+                raise ResourceNotFoundError("job", job_id)
                 
             # Verify ownership
             if user_id and job.user_id != user_id:
-                raise HTTPException(status_code=403, detail="Access denied")
+                raise AuthorizationError("Access denied")
                 
             return job
             
@@ -153,19 +173,31 @@ class JobManager:
             logger.error(f"Failed to list jobs: {str(e)}")
             raise
 
+    @track_time(JOB_PROCESSING_DURATION, {"operation": "update"})
     async def update_job(self, job_id: str, update: JobUpdate, user_id: Optional[str] = None) -> Job:
         """Update job with optional user verification"""
         try:
             # Get job
             job = await self.get_job(job_id, user_id)
-            if not job:
-                raise HTTPException(status_code=404, detail="Job not found")
+            
+            # Track old status for metrics
+            old_status = job.status
+            old_priority = job.priority
             
             # Apply update
             update.apply_to(job)
             
             # Save changes
             job = await self.db.update_job(job)
+            
+            # Update metrics if status changed
+            if job.status != old_status:
+                increment_counter(JOBS_TOTAL, {"status": job.status})
+                
+            # Update queue size if priority changed
+            if job.priority != old_priority:
+                update_gauge(JOB_QUEUE_SIZE, -1, {"priority": old_priority.name})
+                update_gauge(JOB_QUEUE_SIZE, 1, {"priority": job.priority.name})
             
             return job
             
@@ -292,12 +324,18 @@ class JobManager:
         except Exception as e:
             logger.error(f"Failed to adjust concurrency: {str(e)}")
 
+    @track_time(JOB_PROCESSING_DURATION, {"operation": "process"})
     async def _process_job(self, job: Job):
         """Process a single job"""
+        start_time = time.time()
         try:
             # Start processing
             job.start_processing()
             await self.db.update_job(job)
+            
+            # Update metrics
+            increment_counter(JOBS_TOTAL, {"status": job.status})
+            update_gauge(JOB_QUEUE_SIZE, -1, {"priority": job.priority.name})
             
             # Get audio file
             audio_data = await self.storage.retrieve_file(
@@ -331,18 +369,37 @@ class JobManager:
             job.complete()
             await self.db.update_job(job)
             
+            # Update metrics
+            increment_counter(JOBS_TOTAL, {"status": job.status})
+            JOB_PROCESSING_DURATION.labels(status="completed").observe(
+                time.time() - start_time
+            )
+            
             logger.info(f"Completed job {job.id}")
             
         except asyncio.CancelledError:
             # Handle cancellation
             job.cancel()
             await self.db.update_job(job)
+            
+            # Update metrics
+            increment_counter(JOBS_TOTAL, {"status": job.status})
+            JOB_PROCESSING_DURATION.labels(status="cancelled").observe(
+                time.time() - start_time
+            )
             raise
             
         except Exception as e:
             logger.error(f"Failed to process job {job.id}: {str(e)}")
             job.fail(str(e))
             await self.db.update_job(job)
+            
+            # Update metrics
+            increment_counter(JOBS_TOTAL, {"status": job.status})
+            increment_counter(JOB_RETRY_COUNT, {"status": "failed"})
+            JOB_PROCESSING_DURATION.labels(status="failed").observe(
+                time.time() - start_time
+            )
             
         finally:
             # Remove from active jobs

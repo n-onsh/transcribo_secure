@@ -21,18 +21,17 @@ from typing import Any
 
 class Settings(BaseSettings):
     # Application settings
-    backend_api_url: str = "http://backend:8080/api/v1"
+    backend_api_url: str
     poll_interval: int = 5  # seconds
     max_retries: int = 3
     temp_dir: str = "/tmp/transcriber"
-    hf_auth_token: str = ""
-    device: str = "cuda"
-    batch_size: int = 32
+    hf_auth_token: str
+    device: str
+    batch_size: int
 
     class Config:
         env_file = ".env"
         case_sensitive = False
-        extra = "ignore"  # Allow extra fields in the environment
 
 class TranscriberService:
     def __init__(self):
