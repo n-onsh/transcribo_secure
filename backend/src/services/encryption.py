@@ -28,28 +28,26 @@ class EncryptionService:
             print(f"DEBUG: Azure Client ID: {os.getenv('AZURE_CLIENT_ID')}")
             print(f"DEBUG: Azure Client Secret: {os.getenv('AZURE_CLIENT_SECRET')}")
             
-            if not self.key_vault_url:
-                raise ValueError("AZURE_KEYVAULT_URL environment variable not set")
+            # Validate all required environment variables upfront
+            required_vars = {
+                'AZURE_KEYVAULT_URL': self.key_vault_url,
+                'AZURE_TENANT_ID': os.getenv('AZURE_TENANT_ID'),
+                'AZURE_CLIENT_ID': os.getenv('AZURE_CLIENT_ID'),
+                'AZURE_CLIENT_SECRET': os.getenv('AZURE_CLIENT_SECRET')
+            }
             
-            if not os.getenv('AZURE_TENANT_ID'):
-                raise ValueError("AZURE_TENANT_ID environment variable not set")
-                
-            if not os.getenv('AZURE_CLIENT_ID'):
-                raise ValueError("AZURE_CLIENT_ID environment variable not set")
-                
-            if not os.getenv('AZURE_CLIENT_SECRET'):
-                raise ValueError("AZURE_CLIENT_SECRET environment variable not set")
+            missing_vars = [k for k, v in required_vars.items() if not v]
+            if missing_vars:
+                raise ValueError(
+                    f"Missing required environment variables: {', '.join(missing_vars)}\n"
+                    "These variables are needed for Azure Key Vault access. "
+                    "Please check techContext.md for configuration details."
+                )
             
-            # Initialize Key Vault client
-            print("DEBUG: Initializing DefaultAzureCredential...")
+            # Initialize Azure credentials
+            print("DEBUG: Initializing Azure credentials...")
             try:
-                print("DEBUG: Creating DefaultAzureCredential with:")
-                print(f"DEBUG: AZURE_TENANT_ID: {os.getenv('AZURE_TENANT_ID')}")
-                print(f"DEBUG: AZURE_CLIENT_ID: {os.getenv('AZURE_CLIENT_ID')}")
-                print(f"DEBUG: AZURE_CLIENT_SECRET: {'*' * len(os.getenv('AZURE_CLIENT_SECRET', ''))}")
-                
                 from azure.identity._credentials.environment import EnvironmentCredential
-                print("DEBUG: Trying EnvironmentCredential first...")
                 try:
                     credential = EnvironmentCredential()
                     print("DEBUG: EnvironmentCredential initialized successfully")
@@ -57,27 +55,34 @@ class EncryptionService:
                     print(f"DEBUG: EnvironmentCredential failed: {str(e)}")
                     print("DEBUG: Falling back to DefaultAzureCredential...")
                     credential = DefaultAzureCredential()
-                
-                print("DEBUG: DefaultAzureCredential initialized successfully")
+                    print("DEBUG: DefaultAzureCredential initialized successfully")
             except Exception as e:
-                print(f"DEBUG: Failed to initialize DefaultAzureCredential: {str(e)}")
-                print(f"DEBUG: Error type: {type(e)}")
-                print(f"DEBUG: Error args: {e.args}")
-                raise
+                raise ValueError(
+                    "Failed to initialize Azure credentials. This could be due to:\n"
+                    "1. Invalid credentials in environment variables\n"
+                    "2. Network connectivity issues\n"
+                    "3. Azure AD authentication problems\n"
+                    f"Original error: {str(e)}"
+                )
             
+            # Initialize Key Vault client
             print("DEBUG: Creating SecretClient...")
             try:
-                print(f"DEBUG: Creating SecretClient with vault URL: {self.key_vault_url}")
                 self.key_vault = SecretClient(
                     vault_url=self.key_vault_url,
                     credential=credential
                 )
                 print("DEBUG: SecretClient created successfully")
             except Exception as e:
-                print(f"DEBUG: Failed to create SecretClient: {str(e)}")
-                print(f"DEBUG: Error type: {type(e)}")
-                print(f"DEBUG: Error args: {e.args}")
-                raise
+                raise ValueError(
+                    "Failed to create Key Vault client. This could be due to:\n"
+                    "1. Invalid Key Vault URL\n"
+                    "2. Network connectivity issues\n"
+                    "3. Missing RBAC permissions - ensure the application has:\n"
+                    "   - Key Vault Secrets User role for reading secrets\n"
+                    "   - Key Vault Secrets Officer role for setting secrets\n"
+                    f"Original error: {str(e)}"
+                )
             
             # Initialize encryption key
             self.fernet = None

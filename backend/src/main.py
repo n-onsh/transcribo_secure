@@ -101,63 +101,122 @@ async def lifespan(app: FastAPI):
         
         # Initialize services
         print("DEBUG: Initializing auth handler...")
-        global auth_handler
-        auth_handler = AuthMiddleware()
-        logger.info("Auth handler initialized")
-        print("DEBUG: Auth handler initialized successfully")
+        try:
+            global auth_handler
+            auth_handler = AuthMiddleware()
+            logger.info("Auth handler initialized")
+            print("DEBUG: Auth handler initialized successfully")
+        except Exception as auth_error:
+            print(f"DEBUG: Auth handler initialization failed: {str(auth_error)}")
+            logger.error(f"Auth handler initialization failed: {str(auth_error)}")
+            raise
         
         print("DEBUG: Creating database service...")
-        db = DatabaseService()
-        logger.info("Database service instance created")
-        print("DEBUG: Database service created successfully")
+        try:
+            db = DatabaseService()
+            logger.info("Database service instance created")
+            print("DEBUG: Database service created successfully")
+        except Exception as db_error:
+            print(f"DEBUG: Database service creation failed: {str(db_error)}")
+            logger.error(f"Database service creation failed: {str(db_error)}")
+            raise
         
         print("DEBUG: Creating storage service...")
-        storage = StorageService()
-        logger.info("Storage service instance created")
-        print("DEBUG: Storage service created successfully")
+        try:
+            storage = StorageService()
+            logger.info("Storage service instance created")
+            print("DEBUG: Storage service created successfully")
+        except Exception as storage_error:
+            print(f"DEBUG: Storage service creation failed: {str(storage_error)}")
+            logger.error(f"Storage service creation failed: {str(storage_error)}")
+            raise
 
         print("DEBUG: Creating encryption service...")
         try:
+            print("DEBUG: About to create EncryptionService instance...")
             encryption = EncryptionService()
             logger.info("Encryption service instance created")
             print("DEBUG: Encryption service created successfully")
         except Exception as e:
             print(f"DEBUG: Failed to create encryption service: {str(e)}")
+            print(f"DEBUG: Error type: {type(e)}")
+            print(f"DEBUG: Error args: {e.args}")
             logger.error(f"Failed to create encryption service: {str(e)}")
             raise
 
         # Initialize database and storage
         print("DEBUG: Initializing database...")
         logger.info("Initializing database...")
-        await db.initialize_database()  # This will call init_db internally
-        logger.info("Database initialized successfully")
-        print("DEBUG: Database initialized successfully")
+        try:
+            print("DEBUG: Calling db.initialize_database()...")
+            await db.initialize_database()  # This will call init_db internally
+            logger.info("Database initialized successfully")
+            print("DEBUG: Database initialized successfully")
+        except Exception as db_init_error:
+            print(f"DEBUG: Database initialization failed: {str(db_init_error)}")
+            print(f"DEBUG: Error type: {type(db_init_error)}")
+            print(f"DEBUG: Error args: {db_init_error.args}")
+            logger.error(f"Database initialization failed: {str(db_init_error)}")
+            raise
         
         print("DEBUG: Initializing storage buckets...")
         logger.info("Initializing storage buckets...")
-        await storage._init_buckets()
-        logger.info("Storage buckets initialized successfully")
-        print("DEBUG: Storage buckets initialized successfully")
+        try:
+            print("DEBUG: Calling storage._init_buckets()...")
+            await storage._init_buckets()
+            logger.info("Storage buckets initialized successfully")
+            print("DEBUG: Storage buckets initialized successfully")
+        except Exception as storage_init_error:
+            print(f"DEBUG: Storage bucket initialization failed: {str(storage_init_error)}")
+            print(f"DEBUG: Error type: {type(storage_init_error)}")
+            print(f"DEBUG: Error args: {storage_init_error.args}")
+            logger.error(f"Storage bucket initialization failed: {str(storage_init_error)}")
+            raise
 
-        # Initialize metrics
-        update_gauge(DB_CONNECTIONS, await db.get_active_connections())
+        print("DEBUG: Initializing metrics...")
+        try:
+            # Initialize metrics
+            print("DEBUG: Updating DB connections gauge...")
+            update_gauge(DB_CONNECTIONS, await db.get_active_connections())
 
-        # Get storage usage for each bucket
-        buckets = ["audio", "transcription"]
-        for bucket in buckets:
-            size = await storage.get_bucket_size(bucket)
-            update_gauge(STORAGE_BYTES, size, {"bucket": bucket})
+            print("DEBUG: Updating storage metrics...")
+            # Get storage usage for each bucket
+            buckets = ["audio", "transcription"]
+            for bucket in buckets:
+                size = await storage.get_bucket_size(bucket)
+                update_gauge(STORAGE_BYTES, size, {"bucket": bucket})
+            print("DEBUG: Metrics initialized successfully")
+        except Exception as metrics_error:
+            print(f"DEBUG: Metrics initialization failed: {str(metrics_error)}")
+            print(f"DEBUG: Error type: {type(metrics_error)}")
+            print(f"DEBUG: Error args: {metrics_error.args}")
+            logger.error(f"Metrics initialization failed: {str(metrics_error)}")
+            raise
 
         logger.info("Backend services initialized")
+        print("DEBUG: All services initialized successfully")
+        print("DEBUG: Starting background tasks...")
 
         # Start background tasks
-        key_rotation_task = asyncio.create_task(auth_handler._rotate_key_periodically())
-        metrics_update_task = asyncio.create_task(update_metrics_periodically(db, storage))
-        system_metrics_task = asyncio.create_task(update_system_metrics_periodically())
+        try:
+            print("DEBUG: Creating background tasks...")
+            key_rotation_task = asyncio.create_task(auth_handler._rotate_key_periodically())
+            metrics_update_task = asyncio.create_task(update_metrics_periodically(db, storage))
+            system_metrics_task = asyncio.create_task(update_system_metrics_periodically())
+            print("DEBUG: Background tasks created successfully")
+        except Exception as task_error:
+            print(f"DEBUG: Failed to create background tasks: {str(task_error)}")
+            print(f"DEBUG: Error type: {type(task_error)}")
+            print(f"DEBUG: Error args: {task_error.args}")
+            logger.error(f"Failed to create background tasks: {str(task_error)}")
+            raise
 
+        print("DEBUG: About to yield in lifespan...")
         yield
+        print("DEBUG: After yield in lifespan - starting shutdown...")
 
         # Cancel background tasks
+        print("DEBUG: Cancelling background tasks...")
         key_rotation_task.cancel()
         metrics_update_task.cancel()
         system_metrics_task.cancel()
@@ -165,13 +224,23 @@ async def lifespan(app: FastAPI):
             await key_rotation_task
             await metrics_update_task
             await system_metrics_task
+            print("DEBUG: Background tasks cancelled successfully")
         except asyncio.CancelledError:
+            print("DEBUG: Background tasks cancelled")
             pass
+        except Exception as cancel_error:
+            print(f"DEBUG: Error cancelling background tasks: {str(cancel_error)}")
+            logger.error(f"Error cancelling background tasks: {str(cancel_error)}")
 
+        print("DEBUG: Closing database connection...")
         await db.close()
         logger.info("Backend services stopped")
+        print("DEBUG: Backend services stopped - lifespan finished")
 
     except Exception as e:
+        print(f"DEBUG: Lifespan error caught: {str(e)}")
+        print(f"DEBUG: Error type: {type(e)}")
+        print(f"DEBUG: Error args: {e.args}")
         logger.error(f"Startup/shutdown error: {str(e)}")
         raise
 
@@ -366,27 +435,47 @@ def custom_openapi():
 
 print("DEBUG: Creating FastAPI app...")
 
-app = FastAPI(
-    title="Transcribo Backend API",
-    description="Secure API for audio/video transcription",
-    version="1.0.0",
-    lifespan=lifespan,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json"
-)
+try:
+    print("DEBUG: About to create FastAPI instance...")
+    app = FastAPI(
+        title="Transcribo Backend API",
+        description="Secure API for audio/video transcription",
+        version="1.0.0",
+        lifespan=lifespan,
+        docs_url="/api/docs",
+        redoc_url="/api/redoc",
+        openapi_url="/api/openapi.json"
+    )
+    print("DEBUG: FastAPI instance created successfully")
+except Exception as e:
+    print(f"DEBUG: Error creating FastAPI app: {str(e)}")
+    print(f"DEBUG: Error type: {type(e)}")
+    print(f"DEBUG: Error args: {e.args}")
+    raise
 
-# Customize OpenAPI schema
-app.openapi = custom_openapi
+try:
+    print("DEBUG: Setting up OpenAPI schema...")
+    # Customize OpenAPI schema
+    app.openapi = custom_openapi
+    print("DEBUG: OpenAPI schema set")
 
-# Create metrics app
-metrics_app = make_asgi_app()
+    print("DEBUG: Creating metrics app...")
+    # Create metrics app
+    metrics_app = make_asgi_app()
+    print("DEBUG: Metrics app created")
 
-# Add middlewares in correct order (order matters!)
-app.middleware("http")(error_handler_middleware)  # First to catch all errors
-app.middleware("http")(SecurityHeadersMiddleware)  # Then security headers
-app.middleware("http")(MetricsMiddleware)  # Then metrics
-app.add_middleware(RateLimiter)  # Add rate limiting
+    print("DEBUG: Adding middlewares...")
+    # Add middlewares in correct order (order matters!)
+    app.middleware("http")(error_handler_middleware)  # First to catch all errors
+    app.middleware("http")(SecurityHeadersMiddleware)  # Then security headers
+    app.middleware("http")(MetricsMiddleware)  # Then metrics
+    app.add_middleware(RateLimiter)  # Add rate limiting
+    print("DEBUG: Middlewares added successfully")
+except Exception as e:
+    print(f"DEBUG: Error during app setup: {str(e)}")
+    print(f"DEBUG: Error type: {type(e)}")
+    print(f"DEBUG: Error args: {e.args}")
+    raise
 
 # Add logging middleware
 @app.middleware("http")
@@ -417,57 +506,78 @@ async def logging_middleware(request: Request, call_next):
 
         return response
 
-# Configure CORS with security settings
-app.add_middleware(
-    CORSMiddleware,
-    **SecurityConfig.get_cors_config()
-)
+try:
+    print("DEBUG: Configuring CORS...")
+    # Configure CORS with security settings
+    app.add_middleware(
+        CORSMiddleware,
+        **SecurityConfig.get_cors_config()
+    )
+    print("DEBUG: CORS configured successfully")
 
-# Mount metrics endpoint
-app.mount("/metrics", metrics_app)
+    print("DEBUG: Mounting metrics endpoint...")
+    # Mount metrics endpoint
+    app.mount("/metrics", metrics_app)
+    print("DEBUG: Metrics endpoint mounted successfully")
 
-# Dependency to get authenticated user
-async def get_current_user(request: Request = None) -> Dict:
-    """Get authenticated user from request state
+    print("DEBUG: Setting up auth dependencies...")
+    # Dependency to get authenticated user
+    async def get_current_user(request: Request = None) -> Dict:
+        """Get authenticated user from request state
 
-    Returns:
-        Dict: User information including ID and roles
+        Returns:
+            Dict: User information including ID and roles
 
-    Raises:
-        AuthenticationError: If user is not authenticated
-    """
-    if not request or not hasattr(request.state, "user"):
-        raise AuthenticationError("Not authenticated")
-    return request.state.user
+        Raises:
+            AuthenticationError: If user is not authenticated
+        """
+        if not request or not hasattr(request.state, "user"):
+            raise AuthenticationError("Not authenticated")
+        return request.state.user
 
-# Create auth dependency
-async def auth_dependency(request: Request):
-    if auth_handler is None:
-        raise ServiceUnavailableError("auth", "Auth service not initialized")
-    return await auth_handler(request, lambda r: r)
+    # Create auth dependency
+    async def auth_dependency(request: Request):
+        if auth_handler is None:
+            raise ServiceUnavailableError("auth", "Auth service not initialized")
+        return await auth_handler(request, lambda r: r)
+    print("DEBUG: Auth dependencies set up successfully")
 
-# Include auth router without auth dependency
-app.include_router(
-    auth.router,
-    prefix="/api/v1"
-)
+    print("DEBUG: Including routers...")
+    # Include auth router without auth dependency
+    app.include_router(
+        auth.router,
+        prefix="/api/v1"
+    )
+    print("DEBUG: Auth router included")
 
-# Include other routers with auth
-app.include_router(
-    files.router,
-    prefix="/api/v1",
-    dependencies=[Depends(auth_dependency), Depends(get_current_user)]
-)
-app.include_router(
-    jobs.router,
-    prefix="/api/v1",
-    dependencies=[Depends(auth_dependency), Depends(get_current_user)]
-)
-app.include_router(
-    transcriber.router,
-    prefix="/api/v1/transcriber",
-    dependencies=[Depends(auth_dependency), Depends(get_current_user)]
-)
+    # Include other routers with auth
+    app.include_router(
+        files.router,
+        prefix="/api/v1",
+        dependencies=[Depends(auth_dependency), Depends(get_current_user)]
+    )
+    print("DEBUG: Files router included")
+
+    app.include_router(
+        jobs.router,
+        prefix="/api/v1",
+        dependencies=[Depends(auth_dependency), Depends(get_current_user)]
+    )
+    print("DEBUG: Jobs router included")
+
+    app.include_router(
+        transcriber.router,
+        prefix="/api/v1/transcriber",
+        dependencies=[Depends(auth_dependency), Depends(get_current_user)]
+    )
+    print("DEBUG: Transcriber router included")
+
+    print("DEBUG: All routers included successfully")
+except Exception as e:
+    print(f"DEBUG: Error during router setup: {str(e)}")
+    print(f"DEBUG: Error type: {type(e)}")
+    print(f"DEBUG: Error args: {e.args}")
+    raise
 
 @app.get(
     "/health",
@@ -592,3 +702,23 @@ async def health_check():
 async def get_user_info(user: Dict = Depends(get_current_user)):
     """Get authenticated user info"""
     return user
+
+print("DEBUG: All routes and endpoints configured")
+print("DEBUG: Starting FastAPI application...")
+
+try:
+    print("DEBUG: Importing uvicorn...")
+    import uvicorn
+    print("DEBUG: Starting uvicorn server...")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8080,
+        log_level="debug"
+    )
+    print("DEBUG: Uvicorn server started successfully")
+except Exception as e:
+    print(f"DEBUG: Error starting uvicorn server: {str(e)}")
+    print(f"DEBUG: Error type: {type(e)}")
+    print(f"DEBUG: Error args: {e.args}")
+    raise

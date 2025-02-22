@@ -55,13 +55,25 @@ class StorageService:
         minio_host = os.getenv("MINIO_HOST", "localhost")
         minio_port = os.getenv("MINIO_PORT", "9000")
         self.endpoint = f"{minio_host}:{minio_port}"
-        self.access_key = os.getenv("MINIO_ROOT_USER")
-        self.secret_key = os.getenv("MINIO_ROOT_PASSWORD")
+        
+        # Try both sets of credential environment variables
+        self.access_key = os.getenv("MINIO_ACCESS_KEY") or os.getenv("MINIO_ROOT_USER")
+        self.secret_key = os.getenv("MINIO_SECRET_KEY") or os.getenv("MINIO_ROOT_PASSWORD")
+        
+        if not self.access_key:
+            raise ValueError(
+                "MinIO access key not set. Required environment variable: "
+                "MINIO_ACCESS_KEY or MINIO_ROOT_USER"
+            )
+        
+        if not self.secret_key:
+            raise ValueError(
+                "MinIO secret key not set. Required environment variable: "
+                "MINIO_SECRET_KEY or MINIO_ROOT_PASSWORD"
+            )
+        
         self.region = os.getenv("MINIO_REGION", "us-east-1")
         self.secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
-        
-        if not self.access_key or not self.secret_key:
-            raise ValueError("MinIO credentials not set")
         
         # Initialize client
         self.client = Minio(
