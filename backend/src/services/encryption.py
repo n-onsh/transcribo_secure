@@ -17,10 +17,21 @@ class EncryptionService:
         try:
             print("DEBUG: Starting encryption service initialization...")
             
-            # Get configuration
+            # Check for local encryption key first
+            self.encryption_key = os.getenv("ENCRYPTION_KEY")
+            self.salt = os.getenv("ENCRYPTION_SALT", "transcribo-salt").encode()
+            
+            if self.encryption_key:
+                print("DEBUG: Using local encryption key")
+                # Initialize Fernet with local key
+                self.fernet = Fernet(self.encryption_key.encode())
+                logger.info("Encryption service initialized with local key")
+                return
+                
+            # Fall back to Azure Key Vault if no local key
+            print("DEBUG: No local key found, using Azure Key Vault")
             self.key_vault_url = os.getenv("AZURE_KEYVAULT_URL")
             self.key_name = os.getenv("ENCRYPTION_KEY_NAME", "data-encryption-key")
-            self.salt = os.getenv("ENCRYPTION_SALT", "transcribo-salt").encode()
             
             print(f"DEBUG: Key vault URL: {self.key_vault_url}")
             print(f"DEBUG: Key name: {self.key_name}")
@@ -96,7 +107,7 @@ class EncryptionService:
             raise
 
     def _init_encryption(self):
-        """Initialize encryption key"""
+        """Initialize encryption key from Azure Key Vault"""
         try:
             # Get key from Key Vault
             try:

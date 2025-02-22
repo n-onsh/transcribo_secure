@@ -1,40 +1,49 @@
-from pydantic import BaseSettings
+"""
+Application configuration.
+
+Loads settings from environment variables with defaults.
+"""
 from functools import lru_cache
-from typing import Optional
+from pydantic import BaseSettings
 
 class Settings(BaseSettings):
-    # Database settings
-    POSTGRES_HOST: str
-    POSTGRES_PORT: str
-    POSTGRES_DB: str
-    POSTGRES_USER: str
-    POSTGRES_PASSWORD: str
-
-    # MinIO settings
-    MINIO_HOST: str
-    MINIO_PORT: str
-    MINIO_ACCESS_KEY: str
-    MINIO_SECRET_KEY: str
-    MINIO_SECURE: bool = False  # Set to True in production
-
-    # Azure Key Vault settings
-    AZURE_KEYVAULT_URL: str
-    AZURE_TENANT_ID: Optional[str] = None
-    AZURE_CLIENT_ID: Optional[str] = None
-    AZURE_CLIENT_SECRET: Optional[str] = None
-
-    # Application settings
-    MAX_UPLOAD_SIZE: int = 1024 * 1024 * 1024  # 1GB
-    CHUNK_SIZE: int = 1024 * 1024 * 5  # 5MB for multipart uploads
-    ALLOWED_FILE_TYPES: list[str] = [
-        'audio/mpeg', 'audio/wav', 'audio/ogg',
-        'video/mp4', 'video/mpeg', 'video/ogg'
-    ]
+    """Application settings."""
+    
+    # File upload settings
+    MAX_UPLOAD_SIZE: int = 12_000_000_000  # 12GB
+    ALLOWED_FILE_TYPES: set = {
+        'audio/mpeg',
+        'audio/wav',
+        'audio/ogg',
+        'audio/x-wav',
+        'video/mp4',
+        'video/mpeg'
+    }
+    
+    # Storage settings
+    MINIO_HOST: str = "localhost"
+    MINIO_PORT: str = "9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_REGION: str = "us-east-1"
+    MINIO_SECURE: bool = False
+    
+    # Azure settings
+    AZURE_KEYVAULT_URL: str = ""
+    AZURE_TENANT_ID: str = ""
+    AZURE_CLIENT_ID: str = ""
+    AZURE_CLIENT_SECRET: str = ""
+    
+    # Security settings
+    JWT_SECRET_KEY: str = "test-key"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     class Config:
+        """Pydantic config."""
         env_file = ".env"
 
 @lru_cache()
 def get_settings() -> Settings:
-    """Cached settings to avoid reading .env file multiple times"""
+    """Get cached settings instance."""
     return Settings()

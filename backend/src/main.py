@@ -68,10 +68,9 @@ SYSTEM_DISK_USAGE = Gauge(
 
 print("DEBUG: Starting logging setup...")
 
-# Setup logging
+# Setup logging - using OTEL for centralized logging
 setup_logging(
     level="INFO",
-    log_file="logs/backend-api.log",
     json_format=True
 )
 
