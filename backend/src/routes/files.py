@@ -3,20 +3,23 @@ from fastapi.responses import JSONResponse
 from uuid import uuid4
 from ..services.database import DatabaseService
 from ..services.storage import StorageService
+from ..services.job_manager import JobManager
 from ..models.file import FileMetadata
-from ..models.job import TranscriptionOptions
+from ..models.job import TranscriptionOptions, JobPriority
 from datetime import datetime
 from typing import Optional, List
 
 router = APIRouter()
 
 async def get_services():
-    """Dependency to get database and storage services"""
+    """Dependency to get required services"""
     db = DatabaseService()
     storage = StorageService()
+    job_manager = JobManager(storage=storage, db=db)
     try:
-        yield {"db": db, "storage": storage}
+        yield {"db": db, "storage": storage, "job_manager": job_manager}
     finally:
+        await job_manager.stop()
         await db.close()  # Close database connection when done
 
 @router.post("/files/")
@@ -30,26 +33,24 @@ async def upload_file(
     Upload a file and create a transcription job
     """
     try:
+        # Read file data once
+        file_data = await file.read()
+        file_id = uuid4()
+        
         # Store file
         file_metadata = await services["storage"].store_file(
-            file_id=uuid4(),
-            file_data=file.file,
+            file_id=file_id,
+            file_data=file_data,
             file_name=file.filename,
             file_type='input'
         )
         
-        # Create transcription options
-        options = TranscriptionOptions(
-            vocabulary=vocabulary,
-            generate_srt=True
-        )
-        
-        # Create transcription job
-        job = await services["job_processor"].create_transcription_job(
-            file_id=file_metadata.file_id,
+        # Create transcription job with the same file data
+        job = await services["job_manager"].create_job(
             user_id=user_id,
+            file_data=file_data,
             file_name=file.filename,
-            options=options
+            priority=JobPriority.NORMAL
         )
         
         return {

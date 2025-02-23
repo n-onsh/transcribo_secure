@@ -85,36 +85,35 @@ class CleanupService:
 
     async def _get_expired_files(self, cutoff_date: datetime) -> list:
         """Get list of expired files"""
-        with self.db.conn.cursor() as cur:
-            cur.execute("""
+        async with self.db.pool.acquire() as conn:
+            result = await conn.fetch("""
                 SELECT file_id, file_name, file_type
                 FROM files
-                WHERE created_at < %s
+                WHERE created_at < $1
                 AND file_id NOT IN (
                     SELECT file_id 
                     FROM jobs 
                     WHERE status = 'processing'
                 )
-            """, (cutoff_date,))
-            return cur.fetchall()
+            """, cutoff_date)
+            return [(row['file_id'], row['file_name'], row['file_type']) for row in result]
 
     async def _delete_file_data(self, file_id: UUID):
         """Delete file metadata from database"""
-        with self.db.conn.cursor() as cur:
-            # Delete associated jobs first
-            cur.execute("DELETE FROM jobs WHERE file_id = %s", (file_id,))
-            # Then delete file record
-            cur.execute("DELETE FROM files WHERE file_id = %s", (file_id,))
-            self.db.conn.commit()
+        async with self.db.pool.acquire() as conn:
+            async with conn.transaction():
+                # Delete associated jobs first
+                await conn.execute("DELETE FROM jobs WHERE file_id = $1", file_id)
+                # Then delete file record
+                await conn.execute("DELETE FROM files WHERE file_id = $1", file_id)
 
     async def _cleanup_old_jobs(self, cutoff_date: datetime):
         """Clean up old completed/failed job records"""
-        with self.db.conn.cursor() as cur:
-            cur.execute("""
+        async with self.db.pool.acquire() as conn:
+            result = await conn.execute("""
                 DELETE FROM jobs
-                WHERE created_at < %s
+                WHERE created_at < $1
                 AND status IN ('completed', 'failed')
-            """, (cutoff_date,))
-            self.db.conn.commit()
-            deleted_count = cur.rowcount
+            """, cutoff_date)
+            deleted_count = result.split()[-1]  # Get count from "DELETE X" message
             logger.info(f"Cleaned up {deleted_count} old job records")

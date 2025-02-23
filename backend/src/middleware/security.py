@@ -2,12 +2,21 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 from typing import Dict
+from ..config import get_settings
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Add security headers to all responses"""
     
     def __init__(self, app, **kwargs):
         super().__init__(app)
+        settings = get_settings()
+        
+        # Build CSP header from settings
+        csp_parts = []
+        for directive, value in settings.CSP_DIRECTIVES.items():
+            csp_parts.append(f"{directive} {value}")
+        csp_header = "; ".join(csp_parts)
+        
         self.security_headers = {
             # Prevent browsers from performing MIME type sniffing
             "X-Content-Type-Options": "nosniff",
@@ -30,20 +39,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "usb=()"
             ),
             
-            # Enable strict CSP
-            "Content-Security-Policy": (
-                "default-src 'self'; "
-                "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "  # Required for Swagger UI
-                "style-src 'self' 'unsafe-inline'; "  # Required for Swagger UI
-                "img-src 'self' data:; "
-                "font-src 'self'; "
-                "object-src 'none'; "
-                "base-uri 'self'; "
-                "form-action 'self'; "
-                "frame-ancestors 'none'; "
-                "block-all-mixed-content; "
-                "upgrade-insecure-requests"
-            ),
+            # Enable strict CSP from settings
+            "Content-Security-Policy": csp_header + "; block-all-mixed-content; upgrade-insecure-requests",
             
             # Enable strict transport security
             "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
@@ -72,25 +69,17 @@ class SecurityConfig:
     
     @staticmethod
     def get_cors_config() -> Dict:
-        """Get CORS configuration"""
+        """Get CORS configuration from settings"""
+        settings = get_settings()
         return {
-            "allow_origins": [
-                "http://localhost:3000",
-                "https://localhost:3000"
-            ],
+            "allow_origins": list(settings.CORS_ORIGINS),
             "allow_credentials": True,
-            "allow_methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": [
-                "Authorization",
-                "Content-Type",
-                "X-Request-ID",
-                "X-Real-IP",
-                "X-Forwarded-For"
-            ],
+            "allow_methods": list(settings.CORS_METHODS),
+            "allow_headers": list(settings.CORS_HEADERS),
             "expose_headers": [
                 "Content-Length",
                 "Content-Range",
                 "X-Request-ID"
             ],
-            "max_age": 3600
+            "max_age": settings.CORS_MAX_AGE
         }

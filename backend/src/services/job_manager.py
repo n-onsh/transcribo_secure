@@ -34,10 +34,12 @@ class JobManager:
         # Transcriber service URL
         self.transcriber_url = os.getenv("TRANSCRIBER_URL", "http://transcriber:8000")
         
-        # Background tasks
+        # Background tasks and queues
         self.processing_task: Optional[asyncio.Task] = None
         self.cleanup_task: Optional[asyncio.Task] = None
         self.active_jobs: Dict[str, asyncio.Task] = {}
+        self.job_queue: asyncio.Queue = asyncio.Queue()
+        self.worker_tasks: List[asyncio.Task] = []
         
         # Processing settings
         self.max_concurrent_jobs = int(os.getenv("MAX_CONCURRENT_JOBS", "2"))
@@ -66,11 +68,16 @@ class JobManager:
             # Initialize services
             await self.db.initialize_database()
             
-            # Start background tasks
-            self.processing_task = asyncio.create_task(self._process_jobs())
+            # Start worker tasks
+            for _ in range(self.max_concurrent_jobs):
+                task = asyncio.create_task(self._job_worker())
+                self.worker_tasks.append(task)
+            
+            # Start job scheduler and cleanup
+            self.processing_task = asyncio.create_task(self._schedule_jobs())
             self.cleanup_task = asyncio.create_task(self._cleanup_old_jobs())
             
-            logger.info("Job manager started")
+            logger.info(f"Job manager started with {self.max_concurrent_jobs} workers")
             
         except Exception as e:
             logger.error(f"Failed to start job manager: {str(e)}")
@@ -79,12 +86,24 @@ class JobManager:
     async def stop(self):
         """Stop background tasks"""
         try:
-            # Cancel tasks
+            # Cancel all tasks
             if self.processing_task:
                 self.processing_task.cancel()
             if self.cleanup_task:
                 self.cleanup_task.cancel()
-                
+            
+            # Cancel worker tasks
+            for task in self.worker_tasks:
+                task.cancel()
+            
+            # Wait for tasks to complete
+            await asyncio.gather(
+                *self.worker_tasks,
+                self.processing_task,
+                self.cleanup_task,
+                return_exceptions=True
+            )
+            
             # Close services
             await self.db.close()
             
@@ -406,23 +425,35 @@ class JobManager:
             if job.id in self.active_jobs:
                 del self.active_jobs[job.id]
 
-    async def _process_jobs(self):
-        """Background task to process pending jobs"""
+    async def _job_worker(self):
+        """Worker task to process jobs from queue"""
         while True:
             try:
-                # Adjust concurrency based on load
-                self._adjust_concurrency()
+                # Get job from queue
+                job = await self.job_queue.get()
                 
-                # Calculate available slots
-                available_slots = self.max_concurrent_jobs - len(self.active_jobs)
-                if available_slots <= 0:
-                    await asyncio.sleep(5)
-                    continue
-                
+                try:
+                    # Process job
+                    await self._process_job(job)
+                except Exception as e:
+                    logger.error(f"Error processing job {job.id}: {str(e)}")
+                finally:
+                    # Mark task as done
+                    self.job_queue.task_done()
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in job worker: {str(e)}")
+                await asyncio.sleep(1)
+
+    async def _schedule_jobs(self):
+        """Background task to schedule pending jobs"""
+        while True:
+            try:
                 # Get pending jobs
                 pending_jobs = await self.db.list_jobs(
-                    filter=JobFilter(status=JobStatus.PENDING),
-                    limit=available_slots
+                    filter=JobFilter(status=JobStatus.PENDING)
                 )
                 
                 # Sort by priority and retry time
@@ -434,18 +465,18 @@ class JobManager:
                     )
                 )
                 
-                # Process jobs
+                # Add jobs to queue
                 for job in pending_jobs:
                     if job.should_process():
-                        # Create and store task
-                        task = asyncio.create_task(self._process_job(job))
-                        self.active_jobs[job.id] = task
+                        await self.job_queue.put(job)
                 
-                # Sleep before next batch
+                # Wait before next scheduling round
                 await asyncio.sleep(5)
                 
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"Error in job processing loop: {str(e)}")
+                logger.error(f"Error in job scheduler: {str(e)}")
                 await asyncio.sleep(10)
 
     async def _cleanup_old_jobs(self):

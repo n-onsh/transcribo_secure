@@ -15,6 +15,7 @@ from .routes import files, jobs, transcriber, auth, keys
 from .services.database import DatabaseService
 from .services.storage import StorageService
 from .services.encryption import EncryptionService
+from .services.job_manager import JobManager
 from .middleware.auth import AuthMiddleware
 from .middleware.error_handler import error_handler_middleware
 from .middleware.metrics import MetricsMiddleware
@@ -85,7 +86,7 @@ async def lifespan(app: FastAPI):
             raise
         
         try:
-            storage = StorageService()
+            storage = StorageService(database_service=db)
             logger.warning("Storage service instance created")  # Only critical startup messages
         except Exception as storage_error:
             logger.error(f"Storage service creation failed: {str(storage_error)}")
@@ -96,6 +97,14 @@ async def lifespan(app: FastAPI):
             logger.warning("Encryption service instance created")  # Only critical startup messages
         except Exception as e:
             logger.error(f"Failed to create encryption service: {str(e)}")
+            raise
+
+        try:
+            job_manager = JobManager(storage=storage, db=db)
+            await job_manager.start()
+            logger.warning("Job manager initialized and started")  # Only critical startup messages
+        except Exception as e:
+            logger.error(f"Failed to initialize job manager: {str(e)}")
             raise
 
         # Initialize database and storage
@@ -151,6 +160,8 @@ async def lifespan(app: FastAPI):
         except Exception as cancel_error:
             logger.error(f"Error cancelling background tasks: {str(cancel_error)}")
 
+        if 'job_manager' in locals():
+            await job_manager.stop()
         await db.close()
         logger.warning("Backend services stopped")  # Only critical startup messages
 
@@ -244,6 +255,20 @@ async def check_service_health() -> Dict[str, Dict]:
         }
     except Exception as e:
         services["encryption"] = {
+            "status": "unhealthy",
+            "error": str(e)
+        }
+
+    # Check job manager
+    try:
+        job_manager = JobManager()
+        services["job_manager"] = {
+            "status": "healthy",
+            "active_jobs": len(job_manager.active_jobs),
+            "max_concurrent_jobs": job_manager.max_concurrent_jobs
+        }
+    except Exception as e:
+        services["job_manager"] = {
             "status": "unhealthy",
             "error": str(e)
         }
@@ -479,6 +504,11 @@ app.include_router(
                             "storage": {
                                 "status": "healthy",
                                 "buckets": ["audio", "transcription"]
+                            },
+                            "job_manager": {
+                                "status": "healthy",
+                                "active_jobs": 0,
+                                "max_concurrent_jobs": 4
                             },
                             "system": {
                                 "status": "healthy",

@@ -21,8 +21,11 @@ from ..utils.metrics import (
 logger = logging.getLogger(__name__)
 
 class StorageService:
-    def __init__(self):
+    def __init__(self, database_service=None):
         """Initialize storage service"""
+        # Store database service if provided
+        self.db = database_service
+        
         # Define buckets and their settings
         self.buckets = {
             "audio": {
@@ -171,6 +174,7 @@ class StorageService:
         data: bytes,
         file_name: str,
         bucket_type: str,
+        file_id: Optional[str] = None,
         compress: bool = True
     ):
         """Store file in bucket"""
@@ -189,13 +193,15 @@ class StorageService:
             user_key = self.key_mgmt.derive_user_key(user_id)
             encrypted_key = self.key_mgmt.encrypt_file_key(file_key, user_key)
             
-            # Store encrypted key in database
-            from ..models.file import FileKey
-            file_key_obj = FileKey(
-                file_id=file_id,  # You'll need to get this from the file creation
-                encrypted_key=encrypted_key
-            )
-            await database.create_file_key(file_key_obj)
+            # Store encrypted key in database if we have a database service
+            if self.db:
+                from ..models.file import FileKey
+                file_key_obj = FileKey(
+                    file_id=file_id,
+                    owner_id=user_id,
+                    encrypted_key=encrypted_key
+                )
+                await self.db.create_file_key(file_key_obj)
             
             # Compress data if requested (after encryption)
             if compress and bucket_type != "audio":  # Don't compress audio files
@@ -237,6 +243,7 @@ class StorageService:
         user_id: str,
         file_name: str,
         bucket_type: str,
+        file_id: str,
         version_id: Optional[str] = None
     ) -> bytes:
         """Retrieve file from bucket"""
@@ -267,11 +274,18 @@ class StorageService:
                 if file_name.endswith(".gz"):
                     encrypted_data = self._decompress_data(encrypted_data)
                 
-                # Get file key
+                # Get file key if we have a database service
+                if not self.db:
+                    raise ValueError("Database service not initialized")
+                
                 from ..models.file import FileKey
-                file_key_obj = await database.get_file_key(file_id)  # You'll need to get file_id
+                file_key_obj = await self.db.get_file_key(file_id)
                 if not file_key_obj:
                     raise ValueError("File key not found")
+                
+                # Verify ownership
+                if file_key_obj.owner_id != user_id:
+                    raise ValueError("Access denied")
                 
                 # Derive user key and decrypt file key
                 user_key = self.key_mgmt.derive_user_key(user_id)
