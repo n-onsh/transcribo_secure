@@ -1,71 +1,125 @@
-from prometheus_client import Counter, Histogram, Summary, Gauge
+from opentelemetry import metrics
 import functools
 import time
 import torch
 import asyncio
 from typing import Optional
 
-# Transcription metrics
-TRANSCRIPTION_DURATION = Histogram(
-    'transcribo_transcription_duration_seconds',
-    'Time spent on transcription',
-    ['status'],
-    buckets=[30, 60, 120, 300, 600, 1200, 1800]
+# Get meter
+meter = metrics.get_meter_provider().get_meter("transcriber")
+
+# Processing Metrics
+processing_duration = meter.create_histogram(
+    "transcribo_transcriber_processing_duration_seconds",
+    description="Time spent on processing",
+    unit="s"
 )
 
-TRANSCRIPTION_TOTAL = Counter(
-    'transcribo_transcriptions_total',
-    'Total number of transcriptions',
-    ['status']  # success/failure
+processing_total = meter.create_counter(
+    "transcribo_transcriber_processing_total",
+    description="Total number of processing tasks",
+    unit="1"
 )
 
-AUDIO_DURATION = Summary(
-    'transcribo_audio_duration_seconds',
-    'Duration of processed audio files'
+processing_errors = meter.create_counter(
+    "transcribo_transcriber_processing_errors_total",
+    description="Total number of processing errors",
+    unit="1"
 )
 
-WORD_COUNT = Counter(
-    'transcribo_word_count_total',
-    'Total number of transcribed words',
-    ['language']
+# Model Performance Metrics
+model_load_time = meter.create_histogram(
+    "transcribo_transcriber_model_load_duration_seconds",
+    description="Time spent loading models",
+    unit="s"
 )
 
-FOREIGN_SEGMENTS = Counter(
-    'transcribo_foreign_segments_total',
-    'Number of segments in foreign languages',
-    ['language']
+model_inference_time = meter.create_histogram(
+    "transcribo_transcriber_model_inference_duration_seconds",
+    description="Time spent on model inference",
+    unit="s"
 )
 
-# Model metrics
-MODEL_LOAD_TIME = Histogram(
-    'transcribo_model_load_duration_seconds',
-    'Time spent loading models',
-    ['model'],  # whisper/diarization
-    buckets=[1, 5, 10, 30, 60]
+# Resource Metrics
+gpu_memory_usage = meter.create_up_down_counter(
+    "transcribo_transcriber_gpu_memory_bytes",
+    description="GPU memory usage in bytes",
+    unit="By"
 )
 
-GPU_MEMORY_USAGE = Gauge(
-    'transcribo_gpu_memory_bytes',
-    'GPU memory usage in bytes',
-    ['type']  # allocated/reserved
+cpu_memory_usage = meter.create_up_down_counter(
+    "transcribo_transcriber_cpu_memory_bytes",
+    description="CPU memory usage in bytes",
+    unit="By"
 )
 
-MODEL_INFERENCE_TIME = Histogram(
-    'transcribo_model_inference_duration_seconds',
-    'Time spent on model inference',
-    ['operation'],  # transcribe/align/diarize
-    buckets=[0.1, 0.5, 1.0, 5.0, 10.0, 30.0]
+gpu_utilization = meter.create_up_down_counter(
+    "transcribo_transcriber_gpu_utilization_percent",
+    description="GPU utilization percentage",
+    unit="1"
 )
 
-AUDIO_PROCESSING_TIME = Histogram(
-    'transcribo_audio_processing_duration_seconds',
-    'Time spent on audio processing',
-    ['operation'],  # convert/merge/filter
-    buckets=[0.1, 0.5, 1.0, 5.0, 10.0]
+cpu_utilization = meter.create_up_down_counter(
+    "transcribo_transcriber_cpu_utilization_percent",
+    description="CPU utilization percentage",
+    unit="1"
 )
 
-def track_time(metric: Histogram, labels: Optional[dict] = None):
-    """Decorator to track time spent in a function using a Histogram"""
+# Queue Metrics
+queue_size = meter.create_up_down_counter(
+    "transcribo_transcriber_queue_size",
+    description="Number of tasks in queue",
+    unit="1"
+)
+
+queue_wait_time = meter.create_histogram(
+    "transcribo_transcriber_queue_wait_duration_seconds",
+    description="Time spent in queue",
+    unit="s"
+)
+
+def track_processing(duration: float, success: bool):
+    """Track processing duration and result"""
+    labels = {"status": "success" if success else "error"}
+    processing_duration.record(duration, labels)
+    processing_total.add(1, labels)
+    if not success:
+        processing_errors.add(1)
+
+def track_model_load(model_type: str, duration: float):
+    """Track model loading time"""
+    model_load_time.record(duration, {"model_type": model_type})
+
+def track_inference(operation_type: str, duration: float):
+    """Track model inference time"""
+    model_inference_time.record(duration, {"operation_type": operation_type})
+
+def track_gpu_memory():
+    """Track GPU memory usage"""
+    if torch.cuda.is_available():
+        # Track allocated memory
+        allocated = torch.cuda.memory_allocated()
+        gpu_memory_usage.add(allocated, {"type": "allocated"})
+        
+        # Track reserved memory
+        reserved = torch.cuda.memory_reserved()
+        gpu_memory_usage.add(reserved, {"type": "reserved"})
+
+def track_resource_usage(cpu_memory: float, cpu_percent: float, gpu_percent: Optional[float] = None):
+    """Track resource usage"""
+    cpu_memory_usage.add(cpu_memory)
+    cpu_utilization.add(cpu_percent)
+    if gpu_percent is not None:
+        gpu_utilization.add(gpu_percent)
+
+def track_queue_metrics(size: int, wait_time: Optional[float] = None):
+    """Track queue metrics"""
+    queue_size.add(size)
+    if wait_time is not None:
+        queue_wait_time.record(wait_time)
+
+def track_time(metric, labels: Optional[dict] = None):
+    """Decorator to track time spent in a function"""
     def decorator(func):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -73,17 +127,12 @@ def track_time(metric: Histogram, labels: Optional[dict] = None):
             try:
                 result = await func(*args, **kwargs)
                 duration = time.time() - start_time
-                if labels:
-                    metric.labels(**labels).observe(duration)
-                else:
-                    metric.observe(duration)
+                metric.record(duration, labels)
                 return result
             except Exception as e:
                 duration = time.time() - start_time
-                if labels:
-                    metric.labels(**{**labels, "status": "error"}).observe(duration)
-                else:
-                    metric.labels(status="error").observe(duration)
+                error_labels = {**labels, "status": "error"} if labels else {"status": "error"}
+                metric.record(duration, error_labels)
                 raise e
         
         @functools.wraps(func)
@@ -92,55 +141,13 @@ def track_time(metric: Histogram, labels: Optional[dict] = None):
             try:
                 result = func(*args, **kwargs)
                 duration = time.time() - start_time
-                if labels:
-                    metric.labels(**labels).observe(duration)
-                else:
-                    metric.observe(duration)
+                metric.record(duration, labels)
                 return result
             except Exception as e:
                 duration = time.time() - start_time
-                if labels:
-                    metric.labels(**{**labels, "status": "error"}).observe(duration)
-                else:
-                    metric.labels(status="error").observe(duration)
+                error_labels = {**labels, "status": "error"} if labels else {"status": "error"}
+                metric.record(duration, error_labels)
                 raise e
                 
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
     return decorator
-
-def track_gpu_memory():
-    """Track GPU memory usage"""
-    if torch.cuda.is_available():
-        # Track allocated memory
-        allocated = torch.cuda.memory_allocated()
-        GPU_MEMORY_USAGE.labels(type="allocated").set(allocated)
-        
-        # Track reserved memory
-        reserved = torch.cuda.memory_reserved()
-        GPU_MEMORY_USAGE.labels(type="reserved").set(reserved)
-
-def count_words(text: str, language: str):
-    """Count words in text and update metrics"""
-    words = len(text.split())
-    WORD_COUNT.labels(language=language).inc(words)
-    return words
-
-def track_foreign_segment(language: str):
-    """Track foreign language segment"""
-    FOREIGN_SEGMENTS.labels(language=language).inc()
-
-def track_audio_duration(duration: float):
-    """Track audio duration"""
-    AUDIO_DURATION.observe(duration)
-
-def track_model_load_time(model_name: str, duration: float):
-    """Track model loading time"""
-    MODEL_LOAD_TIME.labels(model=model_name).observe(duration)
-
-def track_inference_time(operation: str, duration: float):
-    """Track model inference time"""
-    MODEL_INFERENCE_TIME.labels(operation=operation).observe(duration)
-
-def track_audio_processing(operation: str, duration: float):
-    """Track audio processing time"""
-    AUDIO_PROCESSING_TIME.labels(operation=operation).observe(duration)

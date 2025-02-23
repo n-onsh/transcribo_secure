@@ -144,11 +144,70 @@ class TranscriptionService:
             
             start_time = time.time()
             logger.info("Loading diarization model...")
-            self.diarize_model = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=self.hf_token
-            )
-            self.diarize_model.to(torch.device(self.device))
+            # Initialize diarization pipeline with auth token
+            # Debug token info
+            token_len = len(self.hf_token) if self.hf_token else 0
+            logger.info(f"HF token length: {token_len}")
+            logger.info(f"HF token value: {self.hf_token[:5]}...{self.hf_token[-5:] if token_len > 10 else ''}")
+            
+            try:
+                logger.info("Attempting to load diarization model...")
+                if not self.hf_token:
+                    raise ValueError("HF_AUTH_TOKEN is not set")
+                
+                logger.info(f"Using HF token starting with: {self.hf_token[:10]}...")
+                try:
+                    # First try to initialize the pipeline
+                    pipeline = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization-3.1",
+                        use_auth_token=self.hf_token
+                    )
+                    
+                    if pipeline is None:
+                        raise ValueError("Pipeline initialization returned None")
+                    
+                    # If successful, move to device
+                    logger.info("Successfully loaded diarization pipeline")
+                    logger.info("Moving pipeline to device...")
+                    
+                    self.diarize_model = pipeline.to(torch.device(self.device))
+                    logger.info("Successfully moved pipeline to device")
+                    
+                except Exception as download_error:
+                    error_msg = str(download_error)
+                    logger.error(f"Download error details: {error_msg}")
+                    
+                    if "Could not download" in error_msg:
+                        raise ValueError(
+                            "Could not download diarization model. Please:\n"
+                            "1. Visit https://hf.co/pyannote/speaker-diarization-3.1\n"
+                            "2. Accept the user conditions\n"
+                            "3. Ensure your HF_AUTH_TOKEN has the required access"
+                        )
+                    elif "401 Client Error" in error_msg:
+                        raise ValueError(
+                            "Invalid HF_AUTH_TOKEN. Please check your token is correct."
+                        )
+                    elif "403 Client Error" in error_msg:
+                        raise ValueError(
+                            "Permission denied. Please ensure you have:\n"
+                            "1. Accepted the user conditions at https://hf.co/pyannote/speaker-diarization-3.1\n"
+                            "2. Granted your HF_AUTH_TOKEN access to this model"
+                        )
+                    else:
+                        raise ValueError(f"Failed to initialize diarization model: {error_msg}")
+                
+            except Exception as e:
+                logger.error(f"Failed to load diarization model: {str(e)}")
+                logger.error(f"Error type: {type(e)}")
+                logger.error(f"Error args: {e.args}")
+                raise ValueError(
+                    "Failed to initialize diarization model. Please ensure you have:\n"
+                    "1. A valid HF_AUTH_TOKEN environment variable set\n"
+                    "2. Accepted the user conditions at https://hf.co/pyannote/speaker-diarization-3.1\n"
+                    "3. Granted your token access to the model\n"
+                    f"Error: {str(e)}"
+                )
             track_model_load_time("diarization", time.time() - start_time)
             
             # Track initial GPU memory usage

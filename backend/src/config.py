@@ -34,11 +34,6 @@ class Settings(BaseSettings):
     AZURE_CLIENT_ID: str = ""
     AZURE_CLIENT_SECRET: str = ""
     
-    # Security settings
-    JWT_SECRET_KEY: str = "test-key"
-    JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    
     class Config:
         """Pydantic config."""
         env_file = ".env"

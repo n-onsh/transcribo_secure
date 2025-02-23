@@ -1,10 +1,21 @@
 from nicegui import ui, app
 import os
 import logging
+import time
 from src.services.auth import AuthService
 from src.services.api import APIService
+from src.utils.metrics import (
+    http_requests_total,
+    http_request_duration,
+    file_upload_total,
+    job_status_total
+)
+from src.utils import setup_telemetry
 from pathlib import Path
 import asyncio
+
+# Initialize OpenTelemetry
+setup_telemetry(app)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -17,14 +28,61 @@ api_service = APIService()
 async def check_auth():
     """Check authentication before each page load"""
     try:
-        if not await auth_service.ensure_authenticated():
+        token = await auth_service.get_token()
+        if not token:
+            auth_url = await auth_service.login()
+            ui.open(auth_url)
             return False
         return True
     except Exception as e:
         logger.error(f"Authentication check failed: {str(e)}")
         return False
 
+def track_request(endpoint):
+    """Decorator to track request metrics"""
+    def decorator(func):
+        async def wrapper(*args, **kwargs):
+            start_time = time.time()
+            try:
+                result = await func(*args, **kwargs)
+                duration = time.time() - start_time
+                http_requests_total.add(1, {"method": "GET", "endpoint": endpoint, "status": "success"})
+                http_request_duration.record(duration, {"method": "GET", "endpoint": endpoint})
+                return result
+            except Exception as e:
+                duration = time.time() - start_time
+                http_requests_total.add(1, {"method": "GET", "endpoint": endpoint, "status": "error"})
+                http_request_duration.record(duration, {"method": "GET", "endpoint": endpoint})
+                raise
+        return wrapper
+    return decorator
+
+@ui.page('/auth')
+@track_request('/auth')
+async def auth_callback():
+    """Handle Azure AD auth callback"""
+    try:
+        code = ui.query.get('code')
+        if code:
+            await auth_service.handle_callback(code)
+            ui.open('/')
+    except Exception as e:
+        logger.error(f"Auth callback failed: {str(e)}")
+        ui.notify("Authentication failed", type="error")
+        ui.open('/')
+
+@ui.page('/logout')
+def logout():
+    """Handle logout"""
+    try:
+        redirect_path = auth_service.logout()
+        ui.open(redirect_path)
+    except Exception as e:
+        logger.error(f"Logout failed: {str(e)}")
+        ui.notify("Logout failed", type="error")
+
 @ui.page('/')
+@track_request('/')
 async def main_page():
     """Main application page with authentication"""
     try:
@@ -103,9 +161,11 @@ async def handle_upload(e):
     try:
         result = await api_service.upload_file(e.content, e.name)
         ui.notify(f"File {e.name} uploaded successfully")
+        file_upload_total.add(1, {"status": "success"})
         await update_jobs()
     except Exception as e:
         logger.error(f"Upload failed: {str(e)}")
+        file_upload_total.add(1, {"status": "error"})
         ui.notify("Upload failed", type="error")
 
 def handle_reject(e):
@@ -126,6 +186,15 @@ async def update_jobs():
     """Update job status display"""
     try:
         jobs = await api_service.get_jobs()
+        
+        # Update job status metrics
+        status_counts = {}
+        for job in jobs:
+            status = job['status']
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        for status, count in status_counts.items():
+            job_status_total.add(count, {"status": status})
         
         with ui.card().classes('w-full p-4'):
             # Queue display
@@ -189,8 +258,16 @@ async def download_srt(job_id: str):
         ui.notify("Failed to download SRT", type="error")
 
 @ui.page('/health')
+@track_request('/health')
 async def health():
     """Health check endpoint"""
+    return "OK"
+
+@ui.page('/metrics')
+async def metrics():
+    """OpenTelemetry metrics endpoint"""
+    # The OpenTelemetry collector will scrape metrics directly through the OTLP exporter
+    # We don't need to implement a metrics endpoint ourselves
     return "OK"
 
 # Start the application

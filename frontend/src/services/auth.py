@@ -44,7 +44,7 @@ class AuthService:
             )
             
             # Redirect to Azure AD login
-            ui.open(auth_url)
+            return auth_url
             
         except Exception as e:
             logger.error(f"Login failed: {str(e)}")
@@ -136,8 +136,8 @@ class AuthService:
             for account in self.msal_app.get_accounts():
                 self.msal_app.remove_account(account)
             
-            # Redirect to home
-            ui.open("/")
+            # Return home path for redirect
+            return "/"
             
         except Exception as e:
             logger.error(f"Logout failed: {str(e)}")

@@ -75,7 +75,7 @@ class StorageService:
         self.region = os.getenv("MINIO_REGION", "us-east-1")
         self.secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
         
-        # Initialize client
+        # Initialize services
         self.client = Minio(
             self.endpoint,
             access_key=self.access_key,
@@ -83,9 +83,13 @@ class StorageService:
             region=self.region,
             secure=self.secure
         )
+        
+        # Initialize key management
+        from .key_management import KeyManagementService
+        self.key_mgmt = KeyManagementService()
 
-    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "init", "bucket_name": "all"})
-    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "init", "bucket_name": "all", "error_type": "unknown"})
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "init", "bucket": "all"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "init", "bucket": "all", "error_type": "unknown"})
     async def _init_buckets(self):
         """Initialize storage buckets"""
         try:
@@ -159,8 +163,8 @@ class StorageService:
             logger.error(f"Data decompression failed: {str(e)}")
             raise
 
-    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "store", "bucket_name": "unknown"})
-    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "store", "bucket_name": "unknown", "error_type": "unknown"})
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "store", "bucket": "unknown"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "store", "bucket": "unknown", "error_type": "unknown"})
     async def store_file(
         self,
         user_id: str,
@@ -177,14 +181,30 @@ class StorageService:
             # Get bucket
             bucket = self.buckets[bucket_type]["name"]
             
-            # Compress data if requested
+            # Generate file key and encrypt data
+            file_key = self.key_mgmt.generate_file_key()
+            encrypted_data = self.key_mgmt.encrypt_file(data, file_key)
+            
+            # Derive user key and encrypt file key
+            user_key = self.key_mgmt.derive_user_key(user_id)
+            encrypted_key = self.key_mgmt.encrypt_file_key(file_key, user_key)
+            
+            # Store encrypted key in database
+            from ..models.file import FileKey
+            file_key_obj = FileKey(
+                file_id=file_id,  # You'll need to get this from the file creation
+                encrypted_key=encrypted_key
+            )
+            await database.create_file_key(file_key_obj)
+            
+            # Compress data if requested (after encryption)
             if compress and bucket_type != "audio":  # Don't compress audio files
-                data = self._compress_data(data)
+                encrypted_data = self._compress_data(encrypted_data)
                 file_name += ".gz"
             
             # Create temp file
             with tempfile.NamedTemporaryFile(delete=False) as temp:
-                temp.write(data)
+                temp.write(encrypted_data)
                 temp_path = temp.name
             
             try:
@@ -200,7 +220,7 @@ class StorageService:
                 # Update storage metrics
                 await self.update_bucket_size_metric(bucket_type)
                 
-                logger.info(f"Stored file {file_name} for user {user_id}")
+                logger.info(f"Stored encrypted file {file_name} for user {user_id}")
                 
             finally:
                 # Clean up temp file
@@ -210,8 +230,8 @@ class StorageService:
             logger.error(f"Failed to store file: {str(e)}")
             raise
 
-    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "retrieve", "bucket_name": "unknown"})
-    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "retrieve", "bucket_name": "unknown", "error_type": "unknown"})
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "retrieve", "bucket": "unknown"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "retrieve", "bucket": "unknown", "error_type": "unknown"})
     async def retrieve_file(
         self,
         user_id: str,
@@ -239,13 +259,26 @@ class StorageService:
                     version_id=version_id
                 )
                 
-                # Read file
+                # Read encrypted file
                 with open(temp_path, "rb") as f:
-                    data = f.read()
+                    encrypted_data = f.read()
                 
-                # Decompress if needed
+                # Decompress if needed (before decryption)
                 if file_name.endswith(".gz"):
-                    data = self._decompress_data(data)
+                    encrypted_data = self._decompress_data(encrypted_data)
+                
+                # Get file key
+                from ..models.file import FileKey
+                file_key_obj = await database.get_file_key(file_id)  # You'll need to get file_id
+                if not file_key_obj:
+                    raise ValueError("File key not found")
+                
+                # Derive user key and decrypt file key
+                user_key = self.key_mgmt.derive_user_key(user_id)
+                file_key = self.key_mgmt.decrypt_file_key(file_key_obj.encrypted_key, user_key)
+                
+                # Decrypt data
+                data = self.key_mgmt.decrypt_file(encrypted_data, file_key)
                     
                 return data
                 
@@ -257,8 +290,8 @@ class StorageService:
             logger.error(f"Failed to retrieve file: {str(e)}")
             raise
 
-    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "delete", "bucket_name": "unknown"})
-    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "delete", "bucket_name": "unknown", "error_type": "unknown"})
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "delete", "bucket": "unknown"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "delete", "bucket": "unknown", "error_type": "unknown"})
     async def delete_file(
         self,
         user_id: str,
@@ -289,8 +322,8 @@ class StorageService:
             logger.error(f"Failed to delete file: {str(e)}")
             raise
 
-    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "list", "bucket_name": "unknown"})
-    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "list", "bucket_name": "unknown", "error_type": "unknown"})
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "list", "bucket": "unknown"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "list", "bucket": "unknown", "error_type": "unknown"})
     async def list_files(
         self,
         user_id: str,
@@ -369,12 +402,12 @@ class StorageService:
         """Update storage metrics for bucket"""
         try:
             size = await self.get_bucket_size(bucket_type)
-            update_gauge(STORAGE_BYTES, size, {"bucket_name": bucket_type})
+            update_gauge(STORAGE_BYTES, size, {"bucket": bucket_type})
         except Exception as e:
             logger.error(f"Failed to update storage metrics: {str(e)}")
 
-    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "cleanup", "bucket_name": "temp"})
-    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "cleanup", "bucket_name": "temp", "error_type": "unknown"})
+    @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "cleanup", "bucket": "temp"})
+    @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "cleanup", "bucket": "temp", "error_type": "unknown"})
     async def cleanup_temp_files(self, max_age: int = 24):
         """Clean up old temp files"""
         try:

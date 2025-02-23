@@ -15,7 +15,7 @@ processors:
 
 exporters:
   logging:
-    loglevel: debug
+    verbosity: detailed
   otlp:
     endpoint: tempo:4317
     tls:

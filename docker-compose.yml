@@ -1,41 +1,38 @@
-version: "3.8"
 services:
   traefik:
     image: traefik:v2.11.0
     container_name: transcribo-secure-traefik
     command:
       - "--api.dashboard=true"
-      - "--api.insecure=true"
-      - "--entrypoints.web.address=:80"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=transcribo-secure-network"
-      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
-      - "--providers.file.directory=/etc/traefik/dynamic"
-      - "--providers.file.watch=true"
+      - "--api.insecure=false"
+      - "--ping=true"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
       - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
       - "--entrypoints.websecure.address=:443"
-      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
-      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
-      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=transcribo-secure-network"
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.file.directory=/etc/traefik/selfsigned"
+      - "--providers.file.watch=true"
+      - "--log.level=DEBUG"
+      - "--entrypoints.websecure.http.tls=true"
     ports:
       - "80:80"
       - "443:443"
       - "8080:8080"
     volumes:
-      - "./infrastructure/docker/traefik/selfsigned:/etc/traefik/dynamic:ro"
-      - "./infrastructure/docker/letsencrypt:/letsencrypt"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./infrastructure/docker/traefik/selfsigned:/etc/traefik/selfsigned:ro"
     networks:
       - transcribo-secure-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/ping"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/rawdata", "--no-check-certificate"]
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 15s
+      timeout: 30s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   postgres:
@@ -69,17 +66,21 @@ services:
       - "./.env:/app/.env:ro"
     networks:
       - transcribo-secure-network
+    ports:
+      - "9000:9000"
+      - "9001:9001"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.minio-api.rule=Host(`minio-api.localhost`)"
-      - "traefik.http.routers.minio-console.rule=Host(`minio-console.localhost`)"
       - "traefik.http.routers.minio-api.entrypoints=websecure"
-      - "traefik.http.routers.minio-console.entrypoints=websecure"
       - "traefik.http.routers.minio-api.tls=true"
+      - "traefik.http.routers.minio-api.service=minio-api"
+      - "traefik.http.services.minio-api.loadbalancer.server.port=9000"
+      - "traefik.http.routers.minio-console.rule=Host(`minio-console.localhost`)"
+      - "traefik.http.routers.minio-console.entrypoints=websecure"
       - "traefik.http.routers.minio-console.tls=true"
-      - "traefik.http.routers.minio-api.service=minio"
-      - "traefik.http.routers.minio-console.service=minio"
-      - "traefik.http.services.minio.loadbalancer.server.port=9000"
+      - "traefik.http.routers.minio-console.service=minio-console"
+      - "traefik.http.services.minio-console.loadbalancer.server.port=9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -88,7 +89,7 @@ services:
     restart: unless-stopped
 
   loki:
-    image: grafana/loki:2.9.0
+    image: grafana/loki:2.9.3
     container_name: transcribo-secure-loki
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
@@ -104,7 +105,7 @@ services:
     restart: unless-stopped
 
   tempo:
-    image: grafana/tempo:2.3.0
+    image: grafana/tempo:2.3.1
     container_name: transcribo-secure-tempo
     command: ["-config.file=/etc/tempo/tempo.yaml"]
     ports:
@@ -141,6 +142,12 @@ services:
         condition: service_started
     networks:
       - transcribo-secure-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.otel-metrics.rule=Host(`otel.localhost`) && PathPrefix(`/metrics`)"
+      - "traefik.http.routers.otel-metrics.entrypoints=websecure"
+      - "traefik.http.routers.otel-metrics.tls=true"
+      - "traefik.http.services.otel-metrics.loadbalancer.server.port=8889"
     restart: unless-stopped
 
   backend:
@@ -148,7 +155,7 @@ services:
       context: "./backend"
       dockerfile: Dockerfile
       args:
-        BUILDKIT_PROGRESS: plain
+        BUILDKIT_PROGRESS: quiet
     container_name: transcribo-secure-backend
     logging:
       driver: "json-file"
@@ -156,7 +163,9 @@ services:
         max-size: "10m"
         max-file: "3"
         compress: "true"
+        mode: "non-blocking"
     environment:
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
       - POSTGRES_DB=${POSTGRES_DB}
@@ -174,6 +183,8 @@ services:
       - MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=backend
+      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
       - TRANSCRIBER_URL=https://transcriber.localhost
     command: ["python", "-m", "src.main"]
     depends_on:
@@ -206,7 +217,7 @@ services:
       context: "./frontend"
       dockerfile: Dockerfile
       args:
-        BUILDKIT_PROGRESS: plain
+        BUILDKIT_PROGRESS: quiet
     container_name: transcribo-secure-frontend
     logging:
       driver: "json-file"
@@ -214,15 +225,27 @@ services:
         max-size: "10m"
         max-file: "3"
         compress: "true"
+        mode: "non-blocking"
     environment:
-      - BACKEND_API_URL=https://api.localhost/api/v1
+      - BACKEND_API_URL=http://backend:8080/api/v1
       - REFRESH_INTERVAL=${REFRESH_INTERVAL}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=frontend
+      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
+      - OTEL_PYTHON_LOG_CORRELATION=true
+      - OTEL_METRICS_EXPORTER=otlp
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_LOGS_EXPORTER=otlp
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://otel-collector:4318/v1/metrics
+      - OTEL_METRIC_EXPORT_INTERVAL=10000
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - FRONTEND_URL=https://app.localhost
+      - STORAGE_SECRET=${STORAGE_SECRET}
     volumes:
-      - "./frontend:/app"
       - "./.env:/app/.env:ro"
     networks:
       - transcribo-secure-network
@@ -242,7 +265,7 @@ services:
       context: "./transcriber"
       dockerfile: Dockerfile
       args:
-        BUILDKIT_PROGRESS: plain
+        BUILDKIT_PROGRESS: quiet
         HF_AUTH_TOKEN: ${HF_AUTH_TOKEN}
     container_name: transcribo-secure-transcriber
     logging:
@@ -251,14 +274,18 @@ services:
         max-size: "10m"
         max-file: "3"
         compress: "true"
+        mode: "non-blocking"
     environment:
-      - BACKEND_API_URL=https://api.localhost/api/v1
+      - BACKEND_API_URL=http://backend:8080/api/v1
       - DEVICE=${DEVICE}
       - BATCH_SIZE=${BATCH_SIZE}
       - HF_AUTH_TOKEN=${HF_AUTH_TOKEN}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SERVICE_NAME=transcriber
+      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
     volumes:
       - "transcriber_data:/tmp/transcriber"
       - "huggingface_cache:/root/.cache/huggingface"
@@ -285,19 +312,51 @@ services:
       - "traefik.http.routers.transcriber.entrypoints=websecure"
       - "traefik.http.routers.transcriber.tls=true"
 
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: transcribo-secure-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./infrastructure/docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - transcribo-secure-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prometheus.rule=Host(`prometheus.localhost`)"
+      - "traefik.http.routers.prometheus.entrypoints=websecure"
+      - "traefik.http.routers.prometheus.tls=true"
+      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+    restart: unless-stopped
+
   grafana:
-    image: grafana/grafana:10.2.0
+    image: grafana/grafana:10.3.1
     container_name: transcribo-secure-grafana
+    ports:
+      - "3000:3000"
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_PROXY_ENABLED=true
       - GF_SERVER_ROOT_URL=https://metrics.localhost
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_SERVER_DOMAIN=metrics.localhost
+      - GF_SERVER_ENFORCE_DOMAIN=true
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=none
+      # Alerting disabled
+      - GF_UNIFIED_ALERTING_ENABLED=false
+      - GF_ALERTING_ENABLED=false
+      - GF_LEGACY_ALERTING_ENABLED=false
     volumes:
       - grafana_data:/var/lib/grafana
       - ./infrastructure/docker/grafana/provisioning:/etc/grafana/provisioning
-      - ./infrastructure/docker/grafana/dashboards:/var/lib/grafana/dashboards
+      - ./infrastructure/docker/grafana/dashboards:/etc/grafana/dashboards
       - "./.env:/app/.env:ro"
     networks:
       - transcribo-secure-network
@@ -325,3 +384,4 @@ volumes:
   grafana_data:
   loki_data:
   tempo_data:
+  prometheus_data:

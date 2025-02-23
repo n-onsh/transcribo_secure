@@ -18,7 +18,7 @@
       },
       "id": 1,
       "panels": [],
-      "title": "System Overview",
+      "title": "User Experience",
       "type": "row"
     },
     {
@@ -29,7 +29,37 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "thresholds": {
@@ -38,18 +68,10 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 70
-              },
-              {
-                "color": "red",
-                "value": 90
               }
             ]
           },
-          "unit": "percent"
+          "unit": "s"
         },
         "overrides": []
       },
@@ -61,28 +83,32 @@
       },
       "id": 2,
       "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
+        "legend": {
+          "calcs": ["mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
         },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
-      "pluginVersion": "10.3.1",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "transcribo_transcriber_gpu_utilization_percent",
+          "editorMode": "code",
+          "expr": "rate(transcribo_frontend_page_load_duration_seconds_sum[5m]) / rate(transcribo_frontend_page_load_duration_seconds_count[5m])",
+          "legendFormat": "{{page}}",
+          "range": true,
           "refId": "A"
         }
       ],
-      "title": "GPU Utilization",
-      "type": "gauge"
+      "title": "Page Load Duration",
+      "type": "timeseries"
     },
     {
       "datasource": {
@@ -101,18 +127,10 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 70
-              },
-              {
-                "color": "red",
-                "value": 90
               }
             ]
           },
-          "unit": "percent"
+          "unit": "none"
         },
         "overrides": []
       },
@@ -124,14 +142,16 @@
       },
       "id": 3,
       "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
           "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
+        "textMode": "auto"
       },
       "pluginVersion": "10.3.1",
       "targets": [
@@ -140,12 +160,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "transcribo_transcriber_cpu_utilization_percent",
+          "editorMode": "code",
+          "expr": "transcribo_frontend_active_sessions",
+          "legendFormat": "Active Sessions",
+          "range": true,
           "refId": "A"
         }
       ],
-      "title": "CPU Utilization",
-      "type": "gauge"
+      "title": "Active Sessions",
+      "type": "stat"
     },
     {
       "collapsed": false,
@@ -157,7 +180,7 @@
       },
       "id": 4,
       "panels": [],
-      "title": "Service Performance",
+      "title": "File Operations",
       "type": "row"
     },
     {
@@ -239,21 +262,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(transcribo_backend_request_duration_seconds_sum[5m]) / rate(transcribo_backend_request_duration_seconds_count[5m])",
-          "legendFormat": "Backend Response Time",
+          "editorMode": "code",
+          "expr": "rate(transcribo_frontend_file_upload_duration_seconds_sum[5m]) / rate(transcribo_frontend_file_upload_duration_seconds_count[5m])",
+          "legendFormat": "Upload Duration",
+          "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(transcribo_frontend_api_response_seconds_sum[5m]) / rate(transcribo_frontend_api_response_seconds_count[5m])",
-          "legendFormat": "Frontend Response Time",
-          "refId": "B"
         }
       ],
-      "title": "Service Response Times",
+      "title": "File Upload Duration",
       "type": "timeseries"
     },
     {
@@ -305,7 +321,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -334,21 +351,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "transcribo_backend_job_queue_size",
-          "legendFormat": "Backend Queue",
+          "editorMode": "code",
+          "expr": "rate(transcribo_frontend_file_upload_bytes_sum[5m]) / rate(transcribo_frontend_file_upload_bytes_count[5m])",
+          "legendFormat": "Average Upload Size",
+          "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "transcribo_transcriber_queue_size",
-          "legendFormat": "Transcriber Queue",
-          "refId": "B"
         }
       ],
-      "title": "Queue Sizes",
+      "title": "File Upload Size",
       "type": "timeseries"
     },
     {
@@ -361,7 +371,7 @@
       },
       "id": 7,
       "panels": [],
-      "title": "Error Rates",
+      "title": "Job Status",
       "type": "row"
     },
     {
@@ -426,8 +436,8 @@
       "id": 8,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -442,36 +452,20 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(transcribo_backend_error_requests_total[5m])",
-          "legendFormat": "Backend Errors",
+          "editorMode": "code",
+          "expr": "sum(increase(transcribo_frontend_job_status_total[5m])) by (status)",
+          "legendFormat": "{{status}}",
+          "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(transcribo_frontend_errors_total[5m])",
-          "legendFormat": "Frontend Errors",
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "rate(transcribo_transcriber_processing_errors_total[5m])",
-          "legendFormat": "Transcriber Errors",
-          "refId": "C"
         }
       ],
-      "title": "Error Rates by Service",
+      "title": "Job Status Changes",
       "type": "timeseries"
     }
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": ["system", "monitoring"],
+  "tags": ["frontend", "monitoring"],
   "templating": {
     "list": []
   },
@@ -481,7 +475,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "System Health Overview",
+  "title": "Frontend Monitoring",
   "version": 1,
   "weekStart": ""
 }

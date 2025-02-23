@@ -1,229 +1,221 @@
-from prometheus_client import Counter, Histogram, Summary, Gauge
+from opentelemetry import metrics
 import functools
 import time
 import asyncio
 from typing import Optional
 
+# Get meter
+meter = metrics.get_meter_provider().get_meter("backend")
+
 # API Metrics
-HTTP_REQUEST_DURATION = Histogram(
-    'transcribo_http_request_duration_seconds',
-    'HTTP request duration in seconds',
-    ['method', 'endpoint', 'status_code'],
-    buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]
+http_request_duration = meter.create_histogram(
+    "transcribo_backend_request_duration_seconds",
+    description="HTTP request duration in seconds",
+    unit="s"
 )
 
-HTTP_REQUESTS_TOTAL = Counter(
-    'transcribo_http_requests_total',
-    'Total number of HTTP requests',
-    ['method', 'endpoint', 'status_code']
+http_requests_total = meter.create_counter(
+    "transcribo_backend_requests_total",
+    description="Total number of HTTP requests",
+    unit="1"
 )
 
-HTTP_ERROR_REQUESTS_TOTAL = Counter(
-    'transcribo_http_error_requests_total',
-    'Total number of HTTP requests resulting in errors',
-    ['method', 'endpoint', 'error_type']
+http_error_requests_total = meter.create_counter(
+    "transcribo_backend_error_requests_total",
+    description="Total number of HTTP requests resulting in errors",
+    unit="1"
 )
 
 # Job Metrics
-JOBS_TOTAL = Counter(
-    'transcribo_jobs_total',
-    'Total number of transcription jobs',
-    ['status']
+jobs_total = meter.create_counter(
+    "transcribo_backend_jobs_total",
+    description="Total number of jobs by status",
+    unit="1"
 )
 
-JOB_PROCESSING_DURATION = Histogram(
-    'transcribo_job_processing_duration_seconds',
-    'Time spent processing jobs',
-    ['status'],
-    buckets=[30, 60, 120, 300, 600, 1200, 1800]
+job_processing_duration = meter.create_histogram(
+    "transcribo_backend_job_processing_duration_seconds",
+    description="Time spent processing jobs",
+    unit="s"
 )
 
-JOB_QUEUE_SIZE = Gauge(
-    'transcribo_job_queue_size',
-    'Number of jobs in queue',
-    ['priority']
+job_queue_size = meter.create_up_down_counter(
+    "transcribo_backend_job_queue_size",
+    description="Number of jobs in queue",
+    unit="1"
 )
 
-JOB_RETRY_COUNT = Counter(
-    'transcribo_job_retries_total',
-    'Total number of job retries',
-    ['status']
+job_retry_count = meter.create_counter(
+    "transcribo_backend_job_retries_total",
+    description="Total number of job retries",
+    unit="1"
 )
 
 # Storage Metrics
-STORAGE_OPERATION_DURATION = Histogram(
-    'transcribo_storage_operation_duration_seconds',
-    'Time spent on storage operations',
-    ['operation_name', 'bucket_name'],
-    buckets=[0.1, 0.5, 1.0, 2.0, 5.0]
+storage_operation_duration = meter.create_histogram(
+    "transcribo_backend_storage_operation_duration_seconds",
+    description="Time spent on storage operations",
+    unit="s"
 )
 
-STORAGE_OPERATION_ERRORS = Counter(
-    'transcribo_storage_operation_errors_total',
-    'Total number of storage operation errors',
-    ['operation_name', 'bucket_name', 'error_type'],
+storage_operation_errors = meter.create_counter(
+    "transcribo_backend_storage_operation_errors_total",
+    description="Total number of storage operation errors",
+    unit="1"
 )
 
-STORAGE_BYTES = Gauge(
-    'transcribo_storage_bytes',
-    'Total storage used in bytes',
-    ['bucket_name']
+storage_operations_total = meter.create_counter(
+    "transcribo_backend_storage_operations_total",
+    description="Total number of storage operations by type",
+    unit="1"
 )
 
 # Database Metrics
-DB_OPERATION_DURATION = Histogram(
-    'transcribo_db_operation_duration_seconds',
-    'Time spent on database operations',
-    ['operation'],
-    buckets=[0.01, 0.05, 0.1, 0.5, 1.0]
+db_operation_duration = meter.create_histogram(
+    "transcribo_backend_db_operation_duration_seconds",
+    description="Time spent on database operations",
+    unit="s"
 )
 
-DB_OPERATION_ERRORS = Counter(
-    'transcribo_db_operation_errors_total',
-    'Total number of database operation errors',
-    ['operation', 'error_type']
+db_operation_errors = meter.create_counter(
+    "transcribo_backend_db_operation_errors_total",
+    description="Total number of database operation errors",
+    unit="1"
 )
 
-DB_CONNECTIONS = Gauge(
-    'transcribo_db_connections',
-    'Number of active database connections'
+db_connections = meter.create_up_down_counter(
+    "transcribo_backend_db_connections",
+    description="Number of active database connections",
+    unit="1"
 )
 
-# Business Metrics
-AUDIO_DURATION_TOTAL = Counter(
-    'transcribo_audio_duration_seconds_total',
-    'Total duration of processed audio in seconds'
+# Resource Metrics
+memory_usage = meter.create_up_down_counter(
+    "transcribo_backend_memory_bytes",
+    description="Backend memory usage",
+    unit="By"
 )
 
-TRANSCRIPTION_WORD_COUNT = Counter(
-    'transcribo_transcription_words_total',
-    'Total number of transcribed words'
+cpu_usage = meter.create_up_down_counter(
+    "transcribo_backend_cpu_usage_percent",
+    description="Backend CPU usage percentage",
+    unit="1"
 )
 
-VOCABULARY_SIZE = Gauge(
-    'transcribo_vocabulary_size',
-    'Size of custom vocabulary',
-    ['user_id']
-)
+def track_request(path_type: str, method: str, status_code: int, duration: float):
+    """Track HTTP request metrics"""
+    labels = {
+        "path_type": path_type,  # Use generic path type instead of actual path
+        "method": method,
+        "status": str(status_code)
+    }
+    http_requests_total.add(1, labels)
+    http_request_duration.record(duration, labels)
+    if status_code >= 400:
+        http_error_requests_total.add(1, labels)
 
-def track_time(metric: Histogram, labels: Optional[dict] = None):
+def track_job(status: str):
+    """Track job status"""
+    jobs_total.add(1, {"status": status})
+
+def track_job_processing(duration: float, success: bool):
+    """Track job processing duration"""
+    job_processing_duration.record(duration, {"status": "success" if success else "error"})
+
+def track_job_queue(size: int):
+    """Track job queue size"""
+    job_queue_size.add(size)
+
+def track_job_retry():
+    """Track job retry"""
+    job_retry_count.add(1)
+
+def track_storage_operation(operation_type: str, duration: float, success: bool):
+    """Track storage operation"""
+    labels = {
+        "operation_type": operation_type,
+        "status": "success" if success else "error"
+    }
+    storage_operations_total.add(1, labels)
+    storage_operation_duration.record(duration, labels)
+    if not success:
+        storage_operation_errors.add(1, labels)
+
+def track_db_operation(operation_type: str, duration: float, success: bool):
+    """Track database operation"""
+    labels = {
+        "operation_type": operation_type,
+        "status": "success" if success else "error"
+    }
+    db_operation_duration.record(duration, labels)
+    if not success:
+        db_operation_errors.add(1, labels)
+
+def track_db_connection_change(delta: int):
+    """Track database connection changes"""
+    db_connections.add(delta)
+
+def track_resource_usage(memory: float, cpu: float):
+    """Track resource usage"""
+    memory_usage.add(memory)
+    cpu_usage.add(cpu)
+
+def track_time(metric, labels: Optional[dict] = None):
     """Decorator to track time spent in a function using a Histogram"""
     def decorator(func):
         @functools.wraps(func)
-        async def async_wrapper(self, *args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
             start_time = time.time()
             try:
-                # Get bucket_type from args or kwargs
-                # bucket_type = kwargs.get('bucket_type') # <-- REMOVED problematic automatic extraction
-                # if bucket_type is None and args:
-                #     bucket_type = args[2]  # Assuming bucket_type is the 3rd argument # <-- REMOVED problematic line
-
-                # Update labels with actual bucket_type
-                current_labels = labels.copy() if labels else {}
-                # if bucket_type and 'bucket_name' in current_labels and current_labels['bucket_name'] == 'unknown': # <-- REMOVED bucket_type check
-                #     current_labels['bucket_name'] = bucket_type # <-- REMOVED bucket_type label update
-
-                result = await func(self, *args, **kwargs)
+                result = await func(*args, **kwargs)
                 duration = time.time() - start_time
-                if current_labels:
-                    metric.labels(**current_labels).observe(duration)
-                else:
-                    metric.observe(duration)
+                metric.record(duration, labels)
                 return result
             except Exception as e:
                 duration = time.time() - start_time
-                if labels: # Use original labels if provided
-                    metric.labels(**labels).observe(duration)
-                else:
-                    metric.observe(duration)
+                error_labels = {**labels, "status": "error"} if labels else {"status": "error"}
+                metric.record(duration, error_labels)
                 raise e
         
         @functools.wraps(func)
-        def sync_wrapper(self, *args, **kwargs):
+        def sync_wrapper(*args, **kwargs):
             start_time = time.time()
             try:
-                # Get bucket_type from args or kwargs
-                # bucket_type = kwargs.get('bucket_type') # <-- REMOVED problematic automatic extraction
-                # if bucket_type is None and args:
-                #     bucket_type = args[2]  # Assuming bucket_type is the 3rd argument # <-- REMOVED problematic line
-
-                # Update labels with actual bucket_type
-                current_labels = labels.copy() if labels else {}
-                # if bucket_type and 'bucket_name' in current_labels and current_labels['bucket_name'] == 'unknown': # <-- REMOVED bucket_type check
-                #     current_labels['bucket_name'] = bucket_type # <-- REMOVED bucket_type label update
-                
-                result = func(self, *args, **kwargs)
+                result = func(*args, **kwargs)
                 duration = time.time() - start_time
-                if current_labels:
-                    metric.labels(**current_labels).observe(duration)
-                else:
-                    metric.observe(duration)
+                metric.record(duration, labels)
                 return result
             except Exception as e:
                 duration = time.time() - start_time
-                if labels: # Use original labels if provided
-                    metric.labels(**labels).observe(duration)
-                else:
-                    metric.observe(duration)
+                error_labels = {**labels, "status": "error"} if labels else {"status": "error"}
+                metric.record(duration, error_labels)
                 raise e
                 
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
     return decorator
 
-def track_errors(counter: Counter, labels: Optional[dict] = None):
+def track_errors(counter, labels: Optional[dict] = None):
     """Decorator to track errors using a Counter"""
     def decorator(func):
         @functools.wraps(func)
-        async def async_wrapper(self, *args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
             try:
-                return await func(self, *args, **kwargs)
+                return await func(*args, **kwargs)
             except Exception as e:
-                # Get bucket_type from args or kwargs
-                # bucket_type = kwargs.get('bucket_type') # <-- REMOVED problematic automatic extraction
-                # if bucket_type is None and args:
-                #     bucket_type = args[2]  # Assuming bucket_type is the 3rd argument # <-- REMOVED problematic line
-                
-                # Update labels with actual bucket_type and error type
                 error_labels = labels.copy() if labels else {}
-                # if bucket_type and 'bucket_name' in error_labels and error_labels['bucket_name'] == 'unknown': # <-- REMOVED bucket_type check
-                #     error_labels['bucket_name'] = bucket_type # <-- REMOVED bucket_type label update
-                if error_labels.get('error_type') == 'unknown':
-                    error_labels['error_type'] = e.__class__.__name__
-                counter.labels(**error_labels).inc()
+                error_labels["error_type"] = e.__class__.__name__
+                counter.add(1, error_labels)
                 raise
         
         @functools.wraps(func)
-        def sync_wrapper(self, *args, **kwargs):
+        def sync_wrapper(*args, **kwargs):
             try:
-                return func(self, *args, **kwargs)
+                return func(*args, **kwargs)
             except Exception as e:
-                # Get bucket_type from args or kwargs
-                # bucket_type = kwargs.get('bucket_type') # <-- REMOVED problematic automatic extraction
-                # if bucket_type is None and args:
-                #     bucket_type = args[2]  # Assuming bucket_type is the 3rd argument # <-- REMOVED problematic line
-                
-                # Update labels with actual bucket_type and error type
                 error_labels = labels.copy() if labels else {}
-                # if bucket_type and 'bucket_name' in error_labels and error_labels['bucket_name'] == 'unknown': # <-- REMOVED bucket_type check
-                #     error_labels['bucket_name'] = bucket_type # <-- REMOVED bucket_type label update
-                if error_labels.get('error_type') == 'unknown':
-                    error_labels['error_type'] = e.__class__.__name__
-                counter.labels(**error_labels).inc()
+                error_labels["error_type"] = e.__class__.__name__
+                counter.add(1, error_labels)
                 raise
                 
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
     return decorator
-
-def update_gauge(gauge: Gauge, value: float, labels: Optional[dict] = None):
-    """Update a Gauge metric with labels"""
-    if labels:
-        gauge.labels(**labels).set(value)
-    else:
-        gauge.set(value)
-
-def increment_counter(counter: Counter, labels: Optional[dict] = None):
-    """Increment a Counter metric with labels"""
-    if labels:
-        counter.labels(**labels).inc()
-    else:
-        counter.inc()

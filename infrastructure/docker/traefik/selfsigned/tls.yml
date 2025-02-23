@@ -1,4 +1,9 @@
 tls:
   certificates:
-    - certFile: /etc/traefik/dynamic/cert.pem
-      keyFile: /etc/traefik/dynamic/key.pem
+    - certFile: /etc/traefik/selfsigned/cert.pem
+      keyFile: /etc/traefik/selfsigned/key.pem
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /etc/traefik/selfsigned/cert.pem
+        keyFile: /etc/traefik/selfsigned/key.pem

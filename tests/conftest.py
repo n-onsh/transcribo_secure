@@ -2,6 +2,7 @@
 Test configuration and fixtures for the entire test suite.
 """
 import os
+import sys
 import pytest
 import tempfile
 import shutil
@@ -10,6 +11,10 @@ from unittest.mock import MagicMock, patch
 from minio import Minio
 import asyncio
 from typing import Generator, Any
+
+# Add the repository root to sys.path so absolute imports work
+repo_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(repo_root))
 
 # Constants for testing
 TEST_USER_ID = "test_user"

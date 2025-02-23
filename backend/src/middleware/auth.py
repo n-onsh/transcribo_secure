@@ -1,12 +1,9 @@
 from fastapi import Request, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import jwt
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, List
 import os
-import asyncio
 from .rate_limiter import RateLimiter
+from ..utils.token_validation import TokenValidator
 
 logger = logging.getLogger(__name__)
 
@@ -14,82 +11,115 @@ class AuthMiddleware:
     def __init__(self):
         """Initialize authentication middleware"""
         # Get configuration
-        self.secret_key = os.getenv("JWT_SECRET_KEY")
-        if not self.secret_key:
-            raise ValueError("JWT_SECRET_KEY environment variable not set")
-            
-        self.token_expiry = int(os.getenv("JWT_TOKEN_EXPIRY_HOURS", "24"))
-        self.refresh_expiry = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRY_DAYS", "30"))
-        self.key_rotation_days = int(os.getenv("JWT_KEY_ROTATION_DAYS", "30"))
-        self.algorithm = "HS256"
-        self.security = HTTPBearer()
+        self.encryption_key = os.getenv("ENCRYPTION_KEY")
+        if not self.encryption_key:
+            raise ValueError("ENCRYPTION_KEY environment variable not set")
+        
+        # Initialize token validator
+        try:
+            self.token_validator = TokenValidator()
+        except Exception as e:
+            logger.error(f"Failed to initialize token validator: {str(e)}")
+            raise
         
         # Initialize rate limiter with FastAPI app
         self.rate_limiter = None  # Will be set when used in FastAPI middleware
         
         # Public paths that don't require authentication
         self.public_paths = {
-            "/api/v1/auth/login",
-            "/api/v1/auth/register",
-            "/api/v1/auth/refresh",
             "/api/v1/health",
             "/docs",
             "/redoc",
             "/openapi.json"
         }
         
-        # Initialize key rotation
-        self.last_rotation = datetime.utcnow()
-        self._key_rotation_task = None
+        # Role mappings
+        self.role_mappings = {
+            "Admin": ["admin"],
+            "User": ["user"],
+            "Service": ["service"]
+        }
         
         logger.info("Auth middleware initialized")
 
-    async def __call__(self, request: Request):
+    def _map_azure_roles(self, azure_roles: List[str]) -> List[str]:
+        """Map Azure AD roles to system roles"""
+        system_roles = []
+        for azure_role in azure_roles:
+            if azure_role in self.role_mappings:
+                system_roles.extend(self.role_mappings[azure_role])
+        return list(set(system_roles))  # Remove duplicates
+
+    async def __call__(self, request: Request, call_next):
         """Process request"""
         try:
-            # Rate limiting is now handled by the RateLimiter middleware
+            # Rate limiting is handled by the RateLimiter middleware
+            
+            path = request.url.path
+            headers = request.headers
             
             # Skip auth for public paths
-            if request.url.path in self.public_paths:
-                return True
+            if path in self.public_paths:
+                return await call_next(request)
             
-            # Get token from header
-            auth = await self.security(request)
-            if not auth:
+            # Skip auth for metrics endpoint
+            if path.rstrip('/') == '/metrics':
+                return await call_next(request)
+            
+            # Check for service auth (encryption key)
+            encryption_key = headers.get("X-Encryption-Key")
+            if encryption_key and encryption_key == self.encryption_key:
+                # Add service user to request state
+                request.state.user = {
+                    "id": "transcriber-service",
+                    "roles": ["service"],
+                    "type": "service"
+                }
+                return await call_next(request)
+            
+            # Check for Azure AD token
+            auth_header = headers.get("Authorization")
+            if not auth_header or not auth_header.startswith("Bearer "):
                 raise HTTPException(
                     status_code=401,
-                    detail="Missing authentication token"
+                    detail="Authentication required"
                 )
             
-            # Verify token
+            # Extract and validate token
+            token = auth_header.split(" ")[1]
             try:
-                payload = jwt.decode(
-                    auth.credentials,
-                    self.secret_key,
-                    algorithms=[self.algorithm]
-                )
-            except jwt.ExpiredSignatureError:
+                # Validate token
+                token_data = self.token_validator.validate_token(token)
+                
+                # Get user info
+                user_info = self.token_validator.get_user_info(token_data)
+                
+                # Map roles
+                azure_roles = user_info.get("roles", [])
+                system_roles = self._map_azure_roles(azure_roles)
+                
+                # Add user to request state
+                request.state.user = {
+                    "id": user_info["id"],
+                    "email": user_info["email"],
+                    "name": user_info["name"],
+                    "roles": system_roles,
+                    "groups": user_info["groups"],
+                    "type": "user"
+                }
+                
+                return await call_next(request)
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Token validation failed: {str(e)}")
                 raise HTTPException(
                     status_code=401,
-                    detail="Token has expired"
-                )
-            except jwt.InvalidTokenError:
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid token"
+                    detail="Invalid authentication token"
                 )
             
-            # Add user to request state
-            request.state.user = {
-                "id": payload["sub"],
-                "email": payload.get("email"),
-                "name": payload.get("name"),
-                "roles": payload.get("roles", [])
-            }
-            
-            return True
-            
-        except HTTPException as e:
+        except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Auth middleware error: {str(e)}")
@@ -98,128 +128,8 @@ class AuthMiddleware:
                 detail="Internal server error"
             )
 
-    def create_token(self, user_id: str, email: Optional[str] = None, name: Optional[str] = None, roles: Optional[list] = None) -> Tuple[str, str]:
-        """Create JWT token"""
-        try:
-            # Create access token payload
-            access_payload = {
-                "sub": user_id,
-                "exp": datetime.utcnow() + timedelta(hours=self.token_expiry),
-                "type": "access"
-            }
-            
-            if email:
-                access_payload["email"] = email
-            if name:
-                access_payload["name"] = name
-            if roles:
-                access_payload["roles"] = roles
-            
-            # Create refresh token payload
-            refresh_payload = {
-                "sub": user_id,
-                "exp": datetime.utcnow() + timedelta(days=self.refresh_expiry),
-                "type": "refresh"
-            }
-            
-            # Create tokens
-            access_token = jwt.encode(
-                access_payload,
-                self.secret_key,
-                algorithm=self.algorithm
-            )
-            
-            refresh_token = jwt.encode(
-                refresh_payload,
-                self.secret_key,
-                algorithm=self.algorithm
-            )
-            
-            return access_token, refresh_token
-            
-        except Exception as e:
-            logger.error(f"Failed to create token: {str(e)}")
-            raise
 
-    def verify_token(self, token: str, token_type: str = "access") -> Dict:
-        """Verify JWT token"""
-        try:
-            # Decode and verify token
-            payload = jwt.decode(
-                token,
-                self.secret_key,
-                algorithms=[self.algorithm]
-            )
-            
-            # Verify token type
-            if payload.get("type") != token_type:
-                raise HTTPException(
-                    status_code=401,
-                    detail=f"Invalid token type. Expected {token_type}"
-                )
-            
-            return {
-                "id": payload["sub"],
-                "email": payload.get("email"),
-                "name": payload.get("name"),
-                "roles": payload.get("roles", [])
-            }
-            
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(
-                status_code=401,
-                detail="Token has expired"
-            )
-        except jwt.InvalidTokenError:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid token"
-            )
-
-    def refresh_token(self, refresh_token: str) -> Tuple[str, str]:
-        """Refresh JWT tokens"""
-        try:
-            # Verify refresh token
-            user = self.verify_token(refresh_token, "refresh")
-            
-            # Create new tokens
-            return self.create_token(
-                user["sub"],
-                user.get("email"),
-                user.get("name"),
-                user.get("roles")
-            )
-        except Exception as e:
-            logger.error(f"Failed to refresh token: {str(e)}")
-            raise
-
-    async def _rotate_key_periodically(self):
-        """Periodically rotate the JWT secret key"""
-        while True:
-            try:
-                # Sleep until next rotation
-                days_since_rotation = (datetime.utcnow() - self.last_rotation).days
-                if days_since_rotation >= self.key_rotation_days:
-                    # Generate new key
-                    new_key = os.urandom(32).hex()
-                    
-                    # Update environment variable
-                    os.environ["JWT_SECRET_KEY"] = new_key
-                    self.secret_key = new_key
-                    
-                    # Update last rotation time
-                    self.last_rotation = datetime.utcnow()
-                    
-                    logger.info("Rotated JWT secret key")
-                
-                # Sleep for a day
-                await asyncio.sleep(24 * 60 * 60)
-                
-            except Exception as e:
-                logger.error(f"Failed to rotate JWT key: {str(e)}")
-                await asyncio.sleep(60 * 60)  # Retry in an hour
-
-    def require_roles(self, roles: list):
+    def require_roles(self, roles: List[str]):
         """Decorator to require specific roles"""
         def decorator(func):
             async def wrapper(request: Request, *args, **kwargs):
@@ -241,9 +151,9 @@ class AuthMiddleware:
         """Check if user has role"""
         return role in request.state.user.get("roles", [])
 
-    def is_admin(self, request: Request) -> bool:
-        """Check if user is admin"""
-        return self.has_role(request, "admin")
+    def is_service(self, request: Request) -> bool:
+        """Check if request is from a service"""
+        return self.has_role(request, "service")
 
     def get_user(self, request: Request) -> Dict:
         """Get user from request"""

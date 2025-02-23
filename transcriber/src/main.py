@@ -3,11 +3,7 @@ import logging
 from datetime import datetime
 import httpx
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from .services.transcription import TranscriptionService
 from pathlib import Path
@@ -16,13 +12,20 @@ from typing import Optional, Any
 import json
 from pydantic_settings import BaseSettings
 import tempfile
+from .utils import setup_telemetry
+from fastapi import FastAPI
 
-# Configure OpenTelemetry
-resource = Resource.create({"service.name": "transcriber"})
-tracer_provider = TracerProvider(resource=resource)
-otlp_exporter = OTLPSpanExporter(endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318/v1/traces"))
-tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-trace.set_tracer_provider(tracer_provider)
+# Configure logging first to minimize startup output
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# Create FastAPI app for metrics endpoint
+app = FastAPI()
+
+# Set up OpenTelemetry
+setup_telemetry(app)
 
 # Initialize instrumentors
 HTTPXClientInstrumentor().instrument()
@@ -30,13 +33,17 @@ LoggingInstrumentor().instrument()
 
 # Get tracer
 tracer = trace.get_tracer(__name__)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
+
+@app.get("/metrics")
+async def metrics():
+    """Metrics endpoint for Prometheus"""
+    return {}  # PrometheusMetricReader will handle the response
+
+# Start FastAPI in the background
+import uvicorn
+from threading import Thread
+Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8000)).start()
 
 class Settings(BaseSettings):
     # Application settings
@@ -56,18 +63,21 @@ class Settings(BaseSettings):
 class TranscriberService:
     def __init__(self):
         self.settings = Settings()
+        logger.warning("Settings loaded")  # Only critical startup messages
+        
         self.transcription_service = TranscriptionService(
             device=self.settings.device,
             batch_size=self.settings.batch_size,
             hf_token=self.settings.hf_auth_token
         )
+        logger.warning("TranscriptionService initialized")  # Only critical startup messages
         self.temp_dir = Path(self.settings.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.running = False
 
     async def start(self):
         """Start the transcriber service"""
-        logger.info("Starting transcriber service")
+        logger.warning("Starting transcriber service")  # Only critical startup messages
         self.running = True
         
         while self.running:
@@ -90,7 +100,8 @@ class TranscriberService:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.settings.backend_api_url}/jobs/next"
+                    f"{self.settings.backend_api_url}/jobs/next",
+                    headers={"X-Encryption-Key": os.getenv("ENCRYPTION_KEY")}
                 )
                 if response.status_code == 200:
                     return response.json()
@@ -108,57 +119,53 @@ class TranscriberService:
         job_id = job['job_id']
         file_id = job['file_id']
         
-        job_temp_dir = self.temp_dir / job_id
-        
-        with tracer.start_as_current_span("process_job") as span:
-            span.set_attribute("job_id", job_id)
-            span.set_attribute("file_id", file_id)
-            logger.info(f"Processing job {job_id} for file {file_id}")
+        logger.warning(f"Processing job {job_id} for file {file_id}")  # Only critical job messages
 
-            try:
-                # Update job status to processing
-                await self._update_job_status(job_id, "processing")
+        try:
+            # Update job status to processing
+            await self._update_job_status(job_id, "processing")
 
-                # Create temporary directory for this job
-                job_temp_dir.mkdir(exist_ok=True)
-                
-                # Download file
-                with tracer.start_span("download_file") as download_span:
-                    download_span.set_attribute("file_id", file_id)
-                    input_file = await self._download_file(file_id, job_temp_dir)
-                
-                # Perform transcription
-                with tracer.start_span("transcribe") as transcribe_span:
-                    transcribe_span.set_attribute("job_id", job_id)
-                    transcription_result = await self.transcription_service.transcribe(
-                        input_file,
-                        job_id=job_id
-                    )
-
-                # Upload results
-                with tracer.start_span("upload_results") as upload_span:
-                    upload_span.set_attribute("job_id", job_id)
-                    await self._upload_results(job_id, transcription_result)
-                
-                # Update job status to completed
-                await self._update_job_status(job_id, "completed")
-                
-                logger.info(f"Successfully completed job {job_id}")
-                
-            except Exception as e:
-                logger.error(f"Error processing job {job_id}: {str(e)}")
-                await self._update_job_status(
-                    job_id,
-                    "failed",
-                    error_message=str(e)
+            # Create temporary directory for this job
+            job_temp_dir = self.temp_dir / job_id
+            job_temp_dir.mkdir(exist_ok=True)
+            
+            # Download file
+            with tracer.start_span("download_file") as download_span:
+                download_span.set_attribute("file_id", file_id)
+                input_file = await self._download_file(file_id, job_temp_dir)
+            
+            # Perform transcription
+            with tracer.start_span("transcribe") as transcribe_span:
+                transcribe_span.set_attribute("job_id", job_id)
+                transcription_result = await self.transcription_service.transcribe(
+                    input_file,
+                    job_id=job_id
                 )
-                
-            finally:
-                # Cleanup temporary files
-                if job_temp_dir.exists():
-                    for file in job_temp_dir.glob("*"):
-                        file.unlink()
-                    job_temp_dir.rmdir()
+
+            # Upload results
+            with tracer.start_span("upload_results") as upload_span:
+                upload_span.set_attribute("job_id", job_id)
+                await self._upload_results(job_id, transcription_result)
+            
+            # Update job status to completed
+            await self._update_job_status(job_id, "completed")
+            
+            logger.warning(f"Successfully completed job {job_id}")  # Only critical job messages
+            
+        except Exception as e:
+            logger.error(f"Error processing job {job_id}: {str(e)}")
+            await self._update_job_status(
+                job_id,
+                "failed",
+                error_message=str(e)
+            )
+            
+        finally:
+            # Cleanup temporary files
+            if job_temp_dir.exists():
+                for file in job_temp_dir.glob("*"):
+                    file.unlink()
+                job_temp_dir.rmdir()
 
     async def _download_file(self, file_id: str, temp_dir: Path) -> Path:
         """Download file from backend API"""
@@ -167,7 +174,8 @@ class TranscriberService:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{self.settings.backend_api_url}/files/{file_id}/download",
-                timeout=None
+                timeout=None,
+                headers={"X-Encryption-Key": os.getenv("ENCRYPTION_KEY")}
             )
             response.raise_for_status()
             
@@ -181,7 +189,8 @@ class TranscriberService:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.settings.backend_api_url}/jobs/{job_id}/results",
-                json=results
+                json=results,
+                headers={"X-Encryption-Key": os.getenv("ENCRYPTION_KEY")}
             )
             response.raise_for_status()
 
@@ -202,7 +211,8 @@ class TranscriberService:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.settings.backend_api_url}/jobs/{job_id}/status",
-                json=data
+                json=data,
+                headers={"X-Encryption-Key": os.getenv("ENCRYPTION_KEY")}
             )
             response.raise_for_status()
 
