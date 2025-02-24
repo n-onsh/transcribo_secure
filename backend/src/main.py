@@ -12,15 +12,17 @@ import logging
 from typing import Dict, List
 from prometheus_client import make_asgi_app, Gauge
 from .routes import files, jobs, transcriber, auth, keys
-from .services.database import DatabaseService
-from .services.storage import StorageService
-from .services.encryption import EncryptionService
-from .services.job_manager import JobManager
+from .services.provider import ServiceProvider
+from .services.interfaces import (
+    DatabaseInterface,
+    StorageInterface,
+    JobManagerInterface,
+    EncryptionInterface
+)
 from .middleware.auth import AuthMiddleware
 from .middleware.error_handler import error_handler_middleware
 from .middleware.metrics import MetricsMiddleware
 from .middleware.security import SecurityHeadersMiddleware, SecurityConfig
-from .middleware.rate_limiter import RateLimiter
 from .utils.logging import setup_logging, LogContext, get_logger
 from .utils.exceptions import AuthenticationError, ServiceUnavailableError
 from .utils.metrics import (
@@ -63,72 +65,41 @@ SYSTEM_MEMORY_USAGE = Gauge(
     ['type']  # used/total
 )
 
+# Global service provider
+service_provider = ServiceProvider()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the FastAPI application"""
     try:
-        logger.warning("Starting service initialization...")  # Only critical startup messages
-        
-        # Initialize services
+        logger.warning("Starting service initialization...")
+
+        # Initialize auth handler
         try:
             global auth_handler
             auth_handler = AuthMiddleware()
-            logger.warning("Auth handler initialized")  # Only critical startup messages
+            logger.warning("Auth handler initialized")
         except Exception as auth_error:
             logger.error(f"Auth handler initialization failed: {str(auth_error)}")
             raise
-        
-        try:
-            db = DatabaseService()
-            logger.warning("Database service instance created")  # Only critical startup messages
-        except Exception as db_error:
-            logger.error(f"Database service creation failed: {str(db_error)}")
-            raise
-        
-        try:
-            storage = StorageService(database_service=db)
-            logger.warning("Storage service instance created")  # Only critical startup messages
-        except Exception as storage_error:
-            logger.error(f"Storage service creation failed: {str(storage_error)}")
-            raise
 
+        # Initialize all services
         try:
-            encryption = EncryptionService()
-            logger.warning("Encryption service instance created")  # Only critical startup messages
+            await service_provider.initialize()
+            logger.warning("Service provider initialized")
         except Exception as e:
-            logger.error(f"Failed to create encryption service: {str(e)}")
+            logger.error(f"Service provider initialization failed: {str(e)}")
             raise
 
+        # Initialize metrics
         try:
-            job_manager = JobManager(storage=storage, db=db)
-            await job_manager.start()
-            logger.warning("Job manager initialized and started")  # Only critical startup messages
-        except Exception as e:
-            logger.error(f"Failed to initialize job manager: {str(e)}")
-            raise
+            db = service_provider.get(DatabaseInterface)
+            storage = service_provider.get(StorageInterface)
 
-        # Initialize database and storage
-        logger.info("Initializing database...")
-        try:
-            await db.initialize_database()
-            logger.warning("Database initialized successfully")  # Only critical startup messages
-        except Exception as db_init_error:
-            logger.error(f"Database initialization failed: {str(db_init_error)}")
-            raise
-        
-        logger.info("Initializing storage buckets...")
-        try:
-            await storage._init_buckets()
-            logger.warning("Storage buckets initialized successfully")  # Only critical startup messages
-        except Exception as storage_init_error:
-            logger.error(f"Storage bucket initialization failed: {str(storage_init_error)}")
-            raise
-
-        try:
-            # Initialize metrics
+            # Update database metrics
             update_gauge(DB_CONNECTIONS, await db.get_active_connections())
 
-            # Get storage usage for each bucket
+            # Update storage metrics
             buckets = ["audio", "transcription"]
             for bucket in buckets:
                 bucket_size = await storage.get_bucket_size(bucket)
@@ -137,11 +108,9 @@ async def lifespan(app: FastAPI):
             logger.error(f"Metrics initialization failed: {str(metrics_error)}")
             raise
 
-        logger.warning("Backend services initialized")  # Only critical startup messages
-
         # Start background tasks
         try:
-            metrics_update_task = asyncio.create_task(update_metrics_periodically(db, storage))
+            metrics_update_task = asyncio.create_task(update_metrics_periodically())
             system_metrics_task = asyncio.create_task(update_system_metrics_periodically())
         except Exception as task_error:
             logger.error(f"Failed to create background tasks: {str(task_error)}")
@@ -160,26 +129,30 @@ async def lifespan(app: FastAPI):
         except Exception as cancel_error:
             logger.error(f"Error cancelling background tasks: {str(cancel_error)}")
 
-        if 'job_manager' in locals():
-            await job_manager.stop()
-        await db.close()
-        logger.warning("Backend services stopped")  # Only critical startup messages
+        # Clean up services
+        await service_provider.cleanup()
+        logger.warning("Backend services stopped")
 
     except Exception as e:
         logger.error(f"Startup/shutdown error: {str(e)}")
         raise
 
-async def update_metrics_periodically(db: DatabaseService, storage: StorageService):
+async def update_metrics_periodically():
     """Update metrics periodically"""
     while True:
         try:
-            # Update DB metrics
-            update_gauge(DB_CONNECTIONS, await db.get_active_connections())
+            # Get services
+            db = service_provider.get(DatabaseInterface)
+            storage = service_provider.get(StorageInterface)
 
-            # Update storage metrics
-            for bucket in ["audio", "transcription"]:
-                bucket_size = await storage.get_bucket_size(bucket)
-                update_gauge(STORAGE_BYTES, bucket_size, {"bucket": bucket})
+            if db and storage:
+                # Update DB metrics
+                update_gauge(DB_CONNECTIONS, await db.get_active_connections())
+
+                # Update storage metrics
+                for bucket in ["audio", "transcription"]:
+                    bucket_size = await storage.get_bucket_size(bucket)
+                    update_gauge(STORAGE_BYTES, bucket_size, {"bucket": bucket})
 
             await asyncio.sleep(60)  # Update every minute
 
@@ -221,12 +194,13 @@ async def check_service_health() -> Dict[str, Dict]:
 
     # Check database
     try:
-        db = DatabaseService()
-        await db.get_active_connections()
-        services["database"] = {
-            "status": "healthy",
-            "connections": len(db.pool._holders) if db.pool else 0
-        }
+        db = service_provider.get(DatabaseInterface)
+        if db:
+            await db.get_active_connections()
+            services["database"] = {
+                "status": "healthy",
+                "connections": len(db.pool._holders) if db.pool else 0
+            }
     except Exception as e:
         services["database"] = {
             "status": "unhealthy",
@@ -235,11 +209,12 @@ async def check_service_health() -> Dict[str, Dict]:
 
     # Check storage
     try:
-        storage = StorageService()
-        services["storage"] = {
-            "status": "healthy",
-            "buckets": ["audio", "transcription"]
-        }
+        storage = service_provider.get(StorageInterface)
+        if storage:
+            services["storage"] = {
+                "status": "healthy",
+                "buckets": ["audio", "transcription"]
+            }
     except Exception as e:
         services["storage"] = {
             "status": "unhealthy",
@@ -248,11 +223,11 @@ async def check_service_health() -> Dict[str, Dict]:
 
     # Check encryption
     try:
-        from .services.encryption import EncryptionService
-        encryption = EncryptionService()
-        services["encryption"] = {
-            "status": "healthy"
-        }
+        encryption = service_provider.get(EncryptionInterface)
+        if encryption:
+            services["encryption"] = {
+                "status": "healthy"
+            }
     except Exception as e:
         services["encryption"] = {
             "status": "unhealthy",
@@ -261,12 +236,13 @@ async def check_service_health() -> Dict[str, Dict]:
 
     # Check job manager
     try:
-        job_manager = JobManager()
-        services["job_manager"] = {
-            "status": "healthy",
-            "active_jobs": len(job_manager.active_jobs),
-            "max_concurrent_jobs": job_manager.max_concurrent_jobs
-        }
+        job_manager = service_provider.get(JobManagerInterface)
+        if job_manager:
+            services["job_manager"] = {
+                "status": "healthy",
+                "active_jobs": len(job_manager.active_jobs),
+                "max_concurrent_jobs": job_manager.max_concurrent_jobs
+            }
     except Exception as e:
         services["job_manager"] = {
             "status": "unhealthy",
@@ -385,8 +361,7 @@ app = FastAPI(
 app.openapi = custom_openapi
 
 # Add middlewares in correct order (order matters!)
-app.add_middleware(RateLimiter)  # Add rate limiting first
-app.add_middleware(MetricsMiddleware)  # Then metrics
+app.add_middleware(MetricsMiddleware)  # Add metrics first
 app.add_middleware(SecurityHeadersMiddleware)  # Then security headers
 app.middleware("http")(error_handler_middleware)  # Finally error handler
 

@@ -2,13 +2,20 @@ import os
 import logging
 import gzip
 import asyncio
+import io
 from typing import Optional, Dict, List, BinaryIO
 from minio import Minio
 from minio.error import S3Error
 from datetime import datetime, timedelta
 import tempfile
-import shutil
-from pathlib import Path
+import magic
+from ..models.file_key import FileKeyCreate
+from ..services.interfaces import (
+    StorageInterface,
+    DatabaseInterface,
+    KeyManagementInterface,
+    EncryptionInterface
+)
 from ..utils.metrics import (
     STORAGE_OPERATION_DURATION,
     STORAGE_OPERATION_ERRORS,
@@ -20,11 +27,18 @@ from ..utils.metrics import (
 
 logger = logging.getLogger(__name__)
 
-class StorageService:
-    def __init__(self, database_service=None):
+class StorageService(StorageInterface):
+    def __init__(
+        self,
+        database_service: Optional[DatabaseInterface] = None,
+        key_management_service: Optional[KeyManagementInterface] = None,
+        encryption_service: Optional[EncryptionInterface] = None
+    ):
         """Initialize storage service"""
-        # Store database service if provided
+        # Store services
         self.db = database_service
+        self.key_mgmt = key_management_service
+        self.encryption = encryption_service
         
         # Define buckets and their settings
         self.buckets = {
@@ -78,7 +92,7 @@ class StorageService:
         self.region = os.getenv("MINIO_REGION", "us-east-1")
         self.secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
         
-        # Initialize services
+        # Initialize MinIO client
         self.client = Minio(
             self.endpoint,
             access_key=self.access_key,
@@ -86,10 +100,6 @@ class StorageService:
             region=self.region,
             secure=self.secure
         )
-        
-        # Initialize key management
-        from .key_management import KeyManagementService
-        self.key_mgmt = KeyManagementService()
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "init", "bucket": "all"})
     @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "init", "bucket": "all", "error_type": "unknown"})
@@ -112,7 +122,6 @@ class StorageService:
         except Exception as e:
             logger.error(f"Failed to initialize buckets: {str(e)}")
             raise
-        
 
     def _get_object_path(self, user_id: str, file_name: str) -> str:
         """Get object path for user file"""
@@ -171,57 +180,146 @@ class StorageService:
     async def store_file(
         self,
         user_id: str,
-        data: bytes,
+        data: BinaryIO,
         file_name: str,
         bucket_type: str,
         file_id: Optional[str] = None,
-        compress: bool = True
+        compress: bool = True,
+        chunk_size: int = 8 * 1024 * 1024  # 8MB chunks
     ):
-        """Store file in bucket"""
+        """Store file in bucket using streaming"""
         try:
-            # Validate file
-            self._validate_file(data, file_name, bucket_type)
-            
+            # Verify required services
+            if not self.db or not self.key_mgmt or not self.encryption:
+                raise ValueError("Required services not initialized")
+
             # Get bucket
             bucket = self.buckets[bucket_type]["name"]
+            object_path = self._get_object_path(user_id, file_name)
             
-            # Generate file key and encrypt data
-            file_key = self.key_mgmt.generate_file_key()
-            encrypted_data = self.key_mgmt.encrypt_file(data, file_key)
-            
-            # Derive user key and encrypt file key
-            user_key = self.key_mgmt.derive_user_key(user_id)
-            encrypted_key = self.key_mgmt.encrypt_file_key(file_key, user_key)
-            
-            # Store encrypted key in database if we have a database service
-            if self.db:
-                from ..models.file import FileKey
-                file_key_obj = FileKey(
+            # Create temp file for processing
+            with tempfile.NamedTemporaryFile(delete=False) as temp:
+                temp_path = temp.name
+                
+                # Process file in chunks
+                total_size = 0
+                chunks = []
+                while True:
+                    chunk = data.read(chunk_size)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total_size += len(chunk)
+                
+                # Validate file size
+                if total_size > self.buckets[bucket_type]["max_size"]:
+                    raise ValueError(
+                        f"File too large for {bucket_type} bucket "
+                        f"(max {self.buckets[bucket_type]['max_size']/1024/1024:.1f}MB)"
+                    )
+                
+                # Combine chunks for processing
+                file_data = b''.join(chunks)
+                
+                # Validate file type
+                if self.buckets[bucket_type]["allowed_types"]:
+                    mime = magic.Magic(mime=True)
+                    detected_type = mime.from_buffer(file_data)
+                    if detected_type not in self.buckets[bucket_type]["allowed_types"]:
+                        raise ValueError(
+                            f"Invalid file type for {bucket_type} bucket: {detected_type}"
+                        )
+                
+                # Compress if requested (before encryption)
+                processed_data = file_data
+                if compress and bucket_type != "audio":  # Don't compress audio files
+                    processed_data = self._compress_data(file_data)
+                    file_name += ".gz"
+                
+                # Generate file key and encrypt data
+                file_key = await self.key_mgmt.generate_key()
+                encrypted_data = await self.encryption.encrypt(processed_data, file_key)
+                
+                # Derive user key and encrypt file key
+                user_key = await self.key_mgmt.get_key(f"user_{user_id}")
+                encrypted_key = await self.encryption.encrypt(file_key, user_key)
+                
+                # Store encrypted key
+                file_key_create = FileKeyCreate(
                     file_id=file_id,
                     owner_id=user_id,
                     encrypted_key=encrypted_key
                 )
-                await self.db.create_file_key(file_key_obj)
-            
-            # Compress data if requested (after encryption)
-            if compress and bucket_type != "audio":  # Don't compress audio files
-                encrypted_data = self._compress_data(encrypted_data)
-                file_name += ".gz"
-            
-            # Create temp file
-            with tempfile.NamedTemporaryFile(delete=False) as temp:
-                temp.write(encrypted_data)
-                temp_path = temp.name
+                await self.db.create_file_key(file_key_create)
+                
+                # Write encrypted data to temp file
+                with open(temp_path, 'wb') as f:
+                    f.write(encrypted_data)
             
             try:
-                # Upload file
-                object_path = self._get_object_path(user_id, file_name)
-                await asyncio.to_thread(
-                    self.client.fput_object,
-                    bucket,
-                    object_path,
-                    temp_path
-                )
+                # Upload file using multipart upload for large files
+                if total_size > 64 * 1024 * 1024:  # Use multipart for files > 64MB
+                    # Initialize multipart upload
+                    upload_id = await asyncio.to_thread(
+                        self.client.create_multipart_upload,
+                        bucket,
+                        object_path
+                    )
+                    
+                    try:
+                        # Upload parts
+                        parts = []
+                        with open(temp_path, 'rb') as f:
+                            part_number = 1
+                            while True:
+                                part_data = f.read(chunk_size)
+                                if not part_data:
+                                    break
+                                    
+                                # Upload part
+                                etag = await asyncio.to_thread(
+                                    self.client.put_object,
+                                    bucket,
+                                    object_path,
+                                    io.BytesIO(part_data),
+                                    len(part_data),
+                                    part_number=part_number,
+                                    upload_id=upload_id
+                                )
+                                
+                                parts.append({
+                                    'PartNumber': part_number,
+                                    'ETag': etag
+                                })
+                                part_number += 1
+                        
+                        # Complete multipart upload
+                        await asyncio.to_thread(
+                            self.client.complete_multipart_upload,
+                            bucket,
+                            object_path,
+                            upload_id,
+                            parts
+                        )
+                        
+                    except Exception as e:
+                        # Abort multipart upload on error
+                        await asyncio.to_thread(
+                            self.client.abort_multipart_upload,
+                            bucket,
+                            object_path,
+                            upload_id
+                        )
+                        raise
+                        
+                else:
+                    # Use single-part upload for smaller files
+                    await asyncio.to_thread(
+                        self.client.fput_object,
+                        bucket,
+                        object_path,
+                        temp_path
+                    )
                 
                 # Update storage metrics
                 await self.update_bucket_size_metric(bucket_type)
@@ -248,6 +346,10 @@ class StorageService:
     ) -> bytes:
         """Retrieve file from bucket"""
         try:
+            # Verify required services
+            if not self.db or not self.key_mgmt or not self.encryption:
+                raise ValueError("Required services not initialized")
+
             # Get bucket
             bucket = self.buckets[bucket_type]["name"]
             
@@ -270,29 +372,27 @@ class StorageService:
                 with open(temp_path, "rb") as f:
                     encrypted_data = f.read()
                 
-                # Decompress if needed (before decryption)
-                if file_name.endswith(".gz"):
-                    encrypted_data = self._decompress_data(encrypted_data)
-                
-                # Get file key if we have a database service
-                if not self.db:
-                    raise ValueError("Database service not initialized")
-                
-                from ..models.file import FileKey
+                # Get file key
                 file_key_obj = await self.db.get_file_key(file_id)
                 if not file_key_obj:
                     raise ValueError("File key not found")
                 
-                # Verify ownership
-                if file_key_obj.owner_id != user_id:
-                    raise ValueError("Access denied")
+                # Verify ownership/sharing
+                if user_id != file_key_obj.owner_id:
+                    share = await self.db.get_file_key_share(file_id, user_id)
+                    if not share:
+                        raise ValueError("Access denied")
                 
                 # Derive user key and decrypt file key
-                user_key = self.key_mgmt.derive_user_key(user_id)
-                file_key = self.key_mgmt.decrypt_file_key(file_key_obj.encrypted_key, user_key)
+                user_key = await self.key_mgmt.get_key(f"user_{user_id}")
+                file_key = await self.encryption.decrypt(file_key_obj.encrypted_key, user_key)
                 
                 # Decrypt data
-                data = self.key_mgmt.decrypt_file(encrypted_data, file_key)
+                data = await self.encryption.decrypt(encrypted_data, file_key)
+                
+                # Decompress if needed
+                if file_name.endswith(".gz"):
+                    data = self._decompress_data(data)
                     
                 return data
                 

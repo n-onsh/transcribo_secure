@@ -1,204 +1,287 @@
 # Security Documentation
 
-## Overview
+## Architecture Security
 
-Transcribo Secure implements multiple layers of security to protect sensitive data:
-- End-to-end encryption
-- Secure authentication
-- File validation
-- Rate limiting
-- Security headers
-- Access control
+### Service Boundaries
+```mermaid
+graph TD
+    subgraph Docker Network
+        subgraph Public
+            R[Routes]
+            A[Auth Middleware]
+        end
+        
+        subgraph Services
+            SP[ServiceProvider]
+            DB[DatabaseService]
+            KM[KeyManagementService]
+            EN[EncryptionService]
+            ST[StorageService]
+            JM[JobManager]
+        end
+        
+        subgraph Storage
+            M[MinIO]
+            P[PostgreSQL]
+        end
+        
+        R --> A
+        A --> SP
+        SP --> DB
+        SP --> KM
+        SP --> EN
+        SP --> ST
+        SP --> JM
+        
+        ST --> M
+        DB --> P
+    end
+```
 
-## Authentication & Authorization
+### Security Layers
 
-### JWT Authentication
-- JWT tokens required for all API endpoints (except /api/v1/auth)
-- Tokens include user ID and roles
-- Token validation on every request
-- Configurable token expiration
+1. Network Layer
+   - Docker network isolation
+   - Container-to-container communication
+   - External TLS termination
+   - Network segmentation
 
-### Access Control
-- File ownership validation
-- Role-based access control
-- Resource-level permissions
-- User verification on sensitive operations
+2. Authentication Layer
+   - JWT-based authentication
+   - Token validation
+   - Role-based access control
+   - Secure token storage
 
-## Data Security
+3. Service Layer
+   - Interface-based design
+   - Service validation
+   - Dependency injection
+   - Error handling
 
-### End-to-End Encryption
-1. File Encryption:
-   - Files encrypted before storage
-   - Unique encryption key per file
-   - Keys stored securely in database
-   - Azure Key Vault integration (optional)
-
-2. Key Management:
-   - User-specific key derivation
+4. Encryption Layer
+   - End-to-end encryption
+   - Key management
+   - File key sharing
    - Secure key storage
-   - Key rotation support
-   - Backup key protection
 
-### Storage Security
-1. MinIO Configuration:
-   - TLS encryption (optional)
-   - Access key authentication
-   - Bucket policies
-   - Versioning enabled
+5. Storage Layer
+   - Encrypted storage
+   - Access control
+   - Secure file deletion
+   - Bucket isolation
 
-2. File Validation:
-   - MIME type verification
-   - Size limits
-   - Content validation
-   - Path traversal prevention
-   - Extension validation
+## Container Security
 
-## Network Security
-
-### Rate Limiting
-Per-route limits:
-```
-Files API:        20 req/min (burst: 10)
-Transcriber API:  10 req/min (burst: 5)
-Jobs API:         50 req/min (burst: 20)
-Vocabulary API:   30 req/min (burst: 15)
-```
-
-### Security Headers
-```
-X-Content-Type-Options: nosniff
-X-XSS-Protection: 1; mode=block
-X-Frame-Options: DENY
-Content-Security-Policy: [configured directives]
-Strict-Transport-Security: max-age=31536000
-Cross-Origin-Resource-Policy: same-origin
+### Network Security
+```mermaid
+graph TD
+    subgraph Docker Network
+        B[Backend]
+        T[Transcriber]
+        F[Frontend]
+        
+        B <--> |Internal Network| T
+        F --> |Internal Network| B
+    end
+    
+    subgraph External
+        C[Client]
+        C --> |HTTPS| F
+    end
 ```
 
-### CORS Configuration
-- Configurable allowed origins
-- Strict method restrictions
-- Credential handling
-- Header restrictions
+1. Docker Network
+   - Isolated network namespace
+   - Internal DNS resolution
+   - Container-to-container routing
+   - Network policy enforcement
 
-## Monitoring & Logging
+2. Communication
+   - Internal traffic stays within Docker network
+   - No exposure to external networks
+   - Service authentication via tokens
+   - Request validation
 
-### Security Monitoring
-- Failed authentication attempts
-- Rate limit breaches
-- File validation failures
-- Unauthorized access attempts
-- System health metrics
+3. External Access
+   - TLS termination at edge
+   - HTTPS for all external traffic
+   - Certificate management
+   - CORS configuration
 
-### Privacy-First Logging
-- No sensitive data in logs
-- No user identifiers
-- No file contents
-- No authentication tokens
-- Generic error types only
+## File Security
 
-### Alerts
-- Security event alerts
-- Rate limit breaches
+### Encryption Process
+```mermaid
+graph TD
+    F[File] --> C[Compress]
+    C --> E[Encrypt]
+    E --> S[Store]
+    
+    subgraph Keys
+        FK[File Key] --> EK[Encrypt Key]
+        UK[User Key] --> EK
+        EK --> SK[Store Key]
+    end
+```
+
+1. File Processing
+   - Validate file type and size
+   - Compress before encryption
+   - Generate unique file key
+   - Encrypt with file key
+   - Store encrypted data
+
+2. Key Management
+   - Generate random file keys
+   - Encrypt file keys with user keys
+   - Store encrypted keys in database
+   - Secure key sharing
+
+3. Access Control
+   - Owner-based access
+   - Key-based sharing
+   - Permission validation
+   - Audit logging
+
+## Job Security
+
+### Job Queue Security
+```mermaid
+graph TD
+    subgraph Queue
+        L[Lock] --> C[Claim]
+        C --> P[Process]
+        P --> U[Update]
+    end
+    
+    subgraph Recovery
+        H[Health Check]
+        S[Stale Jobs]
+        R[Retry]
+    end
+    
+    L --> |FOR UPDATE| J1[Job 1]
+    L --> |SKIP LOCKED| J2[Job 2]
+    H --> S
+    S --> R
+```
+
+1. Job Claiming
+   - Distributed locking
+   - FOR UPDATE SKIP LOCKED
+   - Worker validation
+   - Timeout handling
+
+2. Job Processing
+   - Worker authentication
+   - Progress tracking
+   - Error handling
+   - Automatic recovery
+
+3. Job Recovery
+   - Health monitoring
+   - Stale job detection
+   - Automatic retry
+   - Exponential backoff
+
+## Data Protection
+
+### User Data
+- Personal data encryption
+- Secure data deletion
+- Access logging
+- Data isolation
+
+### File Data
+- End-to-end encryption
+- Secure key management
+- Access control
+- Secure deletion
+
+### Job Data
+- Job isolation
+- Progress protection
+- Result encryption
+- Audit logging
+
+## Monitoring & Auditing
+
+### Security Metrics
 - Authentication failures
-- System health issues
-- Resource exhaustion
+- Access attempts
+- Job failures
+- Storage usage
 
-## Development Guidelines
+### Audit Logging
+- Access logs
+- Operation logs
+- Error logs
+- Security events
+
+### Health Monitoring
+- Service health
+- Worker health
+- Storage health
+- Database health
+
+## Configuration Security
+
+### Environment Variables
+```bash
+# Required
+POSTGRES_PASSWORD=<secure_password>
+MINIO_ACCESS_KEY=<access_key>
+MINIO_SECRET_KEY=<secret_key>
+
+# Optional with secure defaults
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+MINIO_HOST=localhost
+MINIO_PORT=9000
+```
+
+### Service Configuration
+- Secure defaults
+- Configuration validation
+- Secret management
+- Error handling
+
+## Development Security
 
 ### Code Security
-1. Input Validation:
-   - All user input validated
-   - Type checking
-   - Size limits
-   - Content validation
+- Interface-based design
+- Type safety
+- Error handling
+- Input validation
 
-2. Error Handling:
-   - Generic error messages
-   - No sensitive data in errors
-   - Proper error logging
-   - Graceful degradation
+### Testing
+- Security tests
+- Concurrency tests
+- Error tests
+- Recovery tests
 
-3. Dependencies:
-   - Regular updates
-   - Security scanning
-   - Version pinning
-   - Vulnerability checks
-
-### Deployment Security
-1. Container Security:
-   - Minimal base images
-   - No root processes
-   - Resource limits
-   - Read-only filesystems
-
-2. Network Security:
-   - Service isolation
-   - Internal networks
-   - Port restrictions
-   - TLS everywhere
+### Deployment
+- Secure builds
+- Container security
+- Network isolation
+- Health monitoring
 
 ## Incident Response
 
-### Security Events
-1. Authentication Failures:
-   - Log event details
-   - Rate tracking
-   - IP blocking (if configured)
-   - Alert on threshold
+### Detection
+- Error monitoring
+- Security alerts
+- Health checks
+- Audit logs
 
-2. Rate Limit Breaches:
-   - Log client information
-   - Track patterns
-   - Adjust limits if needed
-   - Alert on abuse
+### Recovery
+- Automatic recovery
+- Job retry
+- Worker failover
+- Data protection
 
-3. Validation Failures:
-   - Log attempt details
-   - Track patterns
-   - Block repeat offenders
-   - Alert on suspicious activity
-
-### Response Process
-1. Detection:
-   - Monitor logs
-   - Check alerts
-   - Review metrics
-   - User reports
-
-2. Analysis:
-   - Event investigation
-   - Impact assessment
-   - Root cause analysis
-   - Pattern recognition
-
-3. Mitigation:
-   - Block threats
-   - Update rules
-   - Patch vulnerabilities
-   - Adjust controls
-
-4. Recovery:
-   - Restore services
-   - Verify security
-   - Update documentation
-   - User notification
-
-## Compliance
-
-### Data Privacy
-- No sensitive data in logs
-- Secure data storage
-- Access controls
-- Data encryption
-
-### Audit Trail
-- Authentication events
-- Access attempts
-- File operations
-- Configuration changes
-
-### Regular Reviews
-- Security controls
-- Access patterns
-- System configs
-- User permissions
+### Reporting
+- Error logging
+- Security events
+- Audit trails
+- Metrics tracking

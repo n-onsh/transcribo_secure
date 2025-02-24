@@ -7,6 +7,7 @@ from .base import BaseModelWithTimestamps
 class FileKey(BaseModelWithTimestamps):
     """File key model"""
     file_id: UUID
+    owner_id: str
     encrypted_key: bytes
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -28,6 +29,7 @@ class FileKeyShare(BaseModelWithTimestamps):
 class FileKeyCreate(BaseModel):
     """File key creation model"""
     file_id: UUID
+    owner_id: str
     encrypted_key: bytes
 
 class FileKeyShareCreate(BaseModel):

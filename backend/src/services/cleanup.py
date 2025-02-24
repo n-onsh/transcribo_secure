@@ -5,7 +5,7 @@ from uuid import UUID
 import logging
 from .database import DatabaseService
 from .storage import StorageService
-from ..models.job import Job, JobStatus, JobType
+from ..models.job import Job, JobStatus
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)

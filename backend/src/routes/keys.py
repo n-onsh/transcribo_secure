@@ -1,162 +1,242 @@
-from fastapi import APIRouter, HTTPException, Request, Depends
-from typing import Dict, List
-import logging
-from ..middleware.auth import AuthMiddleware
-from ..services.key_management import KeyManagementService
-from ..services.file_key_service import FileKeyService
-from pydantic import BaseModel
-
-logger = logging.getLogger(__name__)
+from fastapi import APIRouter, HTTPException, status
+from typing import List
+from ..models.file_key import FileKeyResponse, FileKeyShareResponse
+from ..services.interfaces import StorageInterface, DatabaseInterface
+from ..services.provider import service_provider
+from ..utils.exceptions import ResourceNotFoundError, AuthorizationError
+from ..utils.metrics import track_time, DB_OPERATION_DURATION
 
 router = APIRouter(
     prefix="/keys",
     tags=["keys"]
 )
 
-# Initialize services
-auth = AuthMiddleware()
-key_service = KeyManagementService()
-file_key_service = FileKeyService()
-
-class ShareKeyRequest(BaseModel):
-    """Request model for sharing file key"""
-    file_id: str
-    recipient_id: str
-
-class FileKeyResponse(BaseModel):
-    """Response model for file key info"""
-    file_id: str
-    owner_id: str
-    shared_with: List[str]
-
-@router.post("/share", response_model=FileKeyResponse)
-async def share_file_key(request: Request, share_request: ShareKeyRequest):
-    """Share file key with another user"""
+@router.get(
+    "/files/{file_id}/key",
+    response_model=FileKeyResponse,
+    summary="Get File Key",
+    description="Get encryption key for a file"
+)
+@track_time(DB_OPERATION_DURATION, {"operation": "get_file_key"})
+async def get_file_key(
+    file_id: str,
+    user_id: str = None  # Set by auth middleware
+):
+    """Get file encryption key"""
     try:
-        # Get current user
-        user = auth.get_user(request)
-        if not user:
+        # Get required services
+        db = service_provider.get(DatabaseInterface)
+        if not db:
             raise HTTPException(
-                status_code=401,
-                detail="Authentication required"
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service unavailable"
             )
 
-        # Get file key record
-        file_key_record = await file_key_service.get_file_key(share_request.file_id)
-        if not file_key_record:
-            raise HTTPException(
-                status_code=404,
-                detail="File key not found"
-            )
+        # Get file key
+        file_key = await db.get_file_key(file_id)
+        if not file_key:
+            raise ResourceNotFoundError("file_key", file_id)
 
         # Verify ownership
-        if file_key_record.owner_id != user["id"]:
-            raise HTTPException(
-                status_code=403,
-                detail="Not authorized to share this file"
-            )
+        if file_key.owner_id != user_id:
+            # Check if user has shared access
+            share = await db.get_file_key_share(file_id, user_id)
+            if not share:
+                raise AuthorizationError("Access denied")
 
-        # Get keys for both users
-        owner_key = key_service.derive_user_key(user["id"])
-        recipient_key = key_service.derive_user_key(share_request.recipient_id)
-
-        # Re-encrypt file key for recipient
-        encrypted_key = key_service.share_file_key(
-            file_key_record.encrypted_key,
-            owner_key,
-            recipient_key
-        )
-
-        # Store shared key
-        await file_key_service.add_shared_key(
-            file_id=share_request.file_id,
-            user_id=share_request.recipient_id,
-            encrypted_key=encrypted_key
-        )
-
-        # Get updated record
-        updated_record = await file_key_service.get_file_key(share_request.file_id)
         return FileKeyResponse(
-            file_id=updated_record.file_id,
-            owner_id=updated_record.owner_id,
-            shared_with=updated_record.shared_with
+            file_id=file_key.file_id,
+            owner_id=file_key.owner_id,
+            encrypted_key=file_key.encrypted_key,
+            created_at=file_key.created_at,
+            updated_at=file_key.updated_at
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to share file key: {str(e)}")
+    except ResourceNotFoundError:
         raise HTTPException(
-            status_code=500,
-            detail="Failed to share file key"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File key {file_id} not found"
+        )
+    except AuthorizationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
         )
 
-@router.get("/shared", response_model=List[FileKeyResponse])
-async def get_shared_files(request: Request):
-    """Get list of files shared with user"""
+@router.get(
+    "/files/{file_id}/shares",
+    response_model=List[FileKeyShareResponse],
+    summary="List Key Shares",
+    description="List users with access to a file key"
+)
+@track_time(DB_OPERATION_DURATION, {"operation": "list_file_key_shares"})
+async def list_file_key_shares(
+    file_id: str,
+    user_id: str = None  # Set by auth middleware
+):
+    """List file key shares"""
     try:
-        # Get current user
-        user = auth.get_user(request)
-        if not user:
+        # Get required services
+        db = service_provider.get(DatabaseInterface)
+        if not db:
             raise HTTPException(
-                status_code=401,
-                detail="Authentication required"
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service unavailable"
             )
 
-        # Get shared files
-        shared_files = await file_key_service.get_shared_files(user["id"])
+        # Get file key to verify ownership
+        file_key = await db.get_file_key(file_id)
+        if not file_key:
+            raise ResourceNotFoundError("file_key", file_id)
+
+        # Only owner can list shares
+        if file_key.owner_id != user_id:
+            raise AuthorizationError("Access denied")
+
+        # Get shares
+        shares = await db.list_file_key_shares(file_id)
+
         return [
-            FileKeyResponse(
-                file_id=record.file_id,
-                owner_id=record.owner_id,
-                shared_with=record.shared_with
+            FileKeyShareResponse(
+                file_id=share.file_id,
+                user_id=share.user_id,
+                encrypted_key=share.encrypted_key,
+                created_at=share.created_at,
+                updated_at=share.updated_at
             )
-            for record in shared_files
+            for share in shares
         ]
 
-    except Exception as e:
-        logger.error(f"Failed to get shared files: {str(e)}")
+    except ResourceNotFoundError:
         raise HTTPException(
-            status_code=500,
-            detail="Failed to get shared files"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File key {file_id} not found"
+        )
+    except AuthorizationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
         )
 
-@router.delete("/share/{file_id}/{user_id}")
-async def revoke_file_access(file_id: str, user_id: str, request: Request):
-    """Revoke user's access to file"""
+@router.post(
+    "/files/{file_id}/shares/{user_id}",
+    response_model=FileKeyShareResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Share Key",
+    description="Share a file key with another user"
+)
+@track_time(DB_OPERATION_DURATION, {"operation": "create_file_key_share"})
+async def create_file_key_share(
+    file_id: str,
+    shared_user_id: str,
+    current_user_id: str = None  # Set by auth middleware
+):
+    """Share file key with another user"""
     try:
-        # Get current user
-        user = auth.get_user(request)
-        if not user:
+        # Get required services
+        db = service_provider.get(DatabaseInterface)
+        if not db:
             raise HTTPException(
-                status_code=401,
-                detail="Authentication required"
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service unavailable"
             )
 
-        # Get file key record
-        file_key_record = await file_key_service.get_file_key(file_id)
-        if not file_key_record:
-            raise HTTPException(
-                status_code=404,
-                detail="File key not found"
-            )
+        # Get file key to verify ownership
+        file_key = await db.get_file_key(file_id)
+        if not file_key:
+            raise ResourceNotFoundError("file_key", file_id)
 
-        # Verify ownership
-        if file_key_record.owner_id != user["id"]:
-            raise HTTPException(
-                status_code=403,
-                detail="Not authorized to modify file access"
-            )
+        # Only owner can share
+        if file_key.owner_id != current_user_id:
+            raise AuthorizationError("Access denied")
 
-        # Remove shared key
-        await file_key_service.remove_shared_key(file_id, user_id)
-        return {"status": "success"}
+        # Create share
+        share = await db.create_file_key_share({
+            "file_id": file_id,
+            "user_id": shared_user_id,
+            "encrypted_key": file_key.encrypted_key
+        })
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to revoke file access: {str(e)}")
+        return FileKeyShareResponse(
+            file_id=share.file_id,
+            user_id=share.user_id,
+            encrypted_key=share.encrypted_key,
+            created_at=share.created_at,
+            updated_at=share.updated_at
+        )
+
+    except ResourceNotFoundError:
         raise HTTPException(
-            status_code=500,
-            detail="Failed to revoke file access"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File key {file_id} not found"
+        )
+    except AuthorizationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.delete(
+    "/files/{file_id}/shares/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove Share",
+    description="Remove a user's access to a file key"
+)
+@track_time(DB_OPERATION_DURATION, {"operation": "delete_file_key_share"})
+async def delete_file_key_share(
+    file_id: str,
+    shared_user_id: str,
+    current_user_id: str = None  # Set by auth middleware
+):
+    """Remove file key share"""
+    try:
+        # Get required services
+        db = service_provider.get(DatabaseInterface)
+        if not db:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service unavailable"
+            )
+
+        # Get file key to verify ownership
+        file_key = await db.get_file_key(file_id)
+        if not file_key:
+            raise ResourceNotFoundError("file_key", file_id)
+
+        # Only owner can remove shares
+        if file_key.owner_id != current_user_id:
+            raise AuthorizationError("Access denied")
+
+        # Delete share
+        await db.delete_file_key_share(file_id, shared_user_id)
+
+    except ResourceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File key {file_id} not found"
+        )
+    except AuthorizationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
         )

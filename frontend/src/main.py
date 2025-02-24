@@ -2,41 +2,26 @@ from nicegui import ui, app
 import os
 import logging
 import time
-from src.services.auth import AuthService
-from src.services.api import APIService
-from src.utils.metrics import (
+import asyncio
+from pathlib import Path
+from .utils import setup_telemetry
+from .utils.metrics import (
     http_requests_total,
     http_request_duration,
     file_upload_total,
     job_status_total
 )
-from src.utils import setup_telemetry
-from pathlib import Path
-import asyncio
-
-# Initialize OpenTelemetry
-setup_telemetry(app)
+from .services.provider import FrontendServiceProvider
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize services
-auth_service = AuthService()
-api_service = APIService()
+# Initialize OpenTelemetry
+setup_telemetry(app)
 
-async def check_auth():
-    """Check authentication before each page load"""
-    try:
-        token = await auth_service.get_token()
-        if not token:
-            auth_url = await auth_service.login()
-            ui.open(auth_url)
-            return False
-        return True
-    except Exception as e:
-        logger.error(f"Authentication check failed: {str(e)}")
-        return False
+# Global service provider
+service_provider = FrontendServiceProvider()
 
 def track_request(endpoint):
     """Decorator to track request metrics"""
@@ -57,6 +42,19 @@ def track_request(endpoint):
         return wrapper
     return decorator
 
+async def check_auth():
+    """Check authentication before each page load"""
+    try:
+        token = await service_provider.auth.get_token()
+        if not token:
+            auth_url = await service_provider.auth.login()
+            ui.open(auth_url)
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Authentication check failed: {str(e)}")
+        return False
+
 @ui.page('/auth')
 @track_request('/auth')
 async def auth_callback():
@@ -64,7 +62,7 @@ async def auth_callback():
     try:
         code = ui.query.get('code')
         if code:
-            await auth_service.handle_callback(code)
+            await service_provider.auth.handle_callback(code)
             ui.open('/')
     except Exception as e:
         logger.error(f"Auth callback failed: {str(e)}")
@@ -75,7 +73,7 @@ async def auth_callback():
 def logout():
     """Handle logout"""
     try:
-        redirect_path = auth_service.logout()
+        redirect_path = service_provider.auth.logout()
         ui.open(redirect_path)
     except Exception as e:
         logger.error(f"Logout failed: {str(e)}")
@@ -130,7 +128,7 @@ async def main_page():
                             
                             try:
                                 # Load vocabulary
-                                words = await api_service.get_vocabulary()
+                                words = await service_provider.api.get_vocabulary()
                                 if words:
                                     vocabulary.value = "\n".join(words)
                             except Exception as e:
@@ -159,7 +157,7 @@ async def main_page():
 async def handle_upload(e):
     """Handle file upload with authentication"""
     try:
-        result = await api_service.upload_file(e.content, e.name)
+        result = await service_provider.api.upload_file(e.content, e.name)
         ui.notify(f"File {e.name} uploaded successfully")
         file_upload_total.add(1, {"status": "success"})
         await update_jobs()
@@ -176,7 +174,7 @@ async def handle_vocabulary_change(e):
     """Handle vocabulary changes"""
     try:
         words = [word.strip() for word in e.value.split("\n") if word.strip()]
-        await api_service.save_vocabulary(words)
+        await service_provider.api.save_vocabulary(words)
     except Exception as e:
         logger.error(f"Failed to save vocabulary: {str(e)}")
         ui.notify("Failed to save vocabulary", type="error")
@@ -185,7 +183,7 @@ async def handle_vocabulary_change(e):
 async def update_jobs():
     """Update job status display"""
     try:
-        jobs = await api_service.get_jobs()
+        jobs = await service_provider.api.get_jobs()
         
         # Update job status metrics
         status_counts = {}
@@ -242,7 +240,7 @@ async def poll_jobs():
 async def download_editor(job_id: str):
     """Download editor HTML"""
     try:
-        result = await api_service.get_transcription(job_id)
+        result = await service_provider.api.get_transcription(job_id)
         ui.download(content=result["editor_html"], filename=f"editor_{job_id}.html")
     except Exception as e:
         logger.error(f"Failed to download editor: {str(e)}")
@@ -251,7 +249,7 @@ async def download_editor(job_id: str):
 async def download_srt(job_id: str):
     """Download SRT file"""
     try:
-        result = await api_service.get_transcription(job_id)
+        result = await service_provider.api.get_transcription(job_id)
         ui.download(content=result["srt"], filename=f"transcript_{job_id}.srt")
     except Exception as e:
         logger.error(f"Failed to download SRT: {str(e)}")
@@ -272,10 +270,16 @@ async def metrics():
 
 # Start the application
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(
-        title="TranscriboZH",
-        host="0.0.0.0",
-        port=int(os.getenv("FRONTEND_PORT", "8501")),
-        storage_secret=os.getenv("STORAGE_SECRET"),
-        reload=False
-    )
+    # Initialize services
+    asyncio.run(service_provider.initialize())
+    
+    try:
+        ui.run(
+            title="TranscriboZH",
+            host="0.0.0.0",
+            port=service_provider.settings.frontend_port,
+            storage_secret=service_provider.settings.storage_secret,
+            reload=False
+        )
+    finally:
+        asyncio.run(service_provider.cleanup())

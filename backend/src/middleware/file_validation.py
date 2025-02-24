@@ -6,11 +6,16 @@ Validates uploaded files for:
 2. File size
 3. Format validation
 4. Security checks
+5. Streaming uploads
 """
 from fastapi import HTTPException, Request
-from typing import Callable
-import magic.magic as magic
+from typing import Callable, List
+import magic
+import io
 from ..config import get_settings
+
+# Size of chunks to read for validation (8MB)
+CHUNK_SIZE = 8 * 1024 * 1024
 
 async def validate_file_middleware(request: Request, call_next: Callable):
     """Middleware to validate file uploads"""
@@ -40,18 +45,24 @@ async def validate_file_middleware(request: Request, call_next: Callable):
         
         # Store original receive to use after validation
         original_receive = request.receive
-        chunks = []
+        chunks: List[bytes] = []
         total_size = 0
         content_type_validated = False
         
-        # Read initial chunks for validation
+        # Create buffer for MIME type detection
+        mime_buffer = io.BytesIO()
+        mime_size = 0
+        mime_needed = 16 * 1024  # 16KB for reliable MIME detection
+        
+        # Read chunks for validation
         while True:
             chunk = await original_receive()
             chunks.append(chunk)
             
             # Update total size
             body = chunk.get('body', b'')
-            total_size += len(body)
+            chunk_size = len(body)
+            total_size += chunk_size
             
             # Check total size
             if total_size >= settings.MAX_UPLOAD_SIZE:
@@ -60,17 +71,23 @@ async def validate_file_middleware(request: Request, call_next: Callable):
                     detail=f"This file is too large. Maximum allowed size is {settings.MAX_UPLOAD_SIZE / 1_000_000_000:.0f}GB."
                 )
             
-            # Try to validate content type if we have enough data
-            if not content_type_validated and total_size >= 8192:
-                content_type_validated = True
-                mime = magic.Magic(mime=True)
-                detected_type = mime.from_buffer(b''.join(c['body'] for c in chunks))
+            # Collect data for MIME type detection
+            if not content_type_validated and mime_size < mime_needed:
+                to_write = min(mime_needed - mime_size, chunk_size)
+                mime_buffer.write(body[:to_write])
+                mime_size += to_write
                 
-                if detected_type not in settings.ALLOWED_FILE_TYPES:
-                    raise HTTPException(
-                        status_code=415,
-                        detail=f"This file doesn't appear to be a valid audio/video file. Detected type: {detected_type}. Please ensure you're uploading a supported media file."
-                    )
+                # Validate content type if we have enough data
+                if mime_size >= mime_needed:
+                    content_type_validated = True
+                    mime = magic.Magic(mime=True)
+                    detected_type = mime.from_buffer(mime_buffer.getvalue())
+                    
+                    if detected_type not in settings.ALLOWED_FILE_TYPES:
+                        raise HTTPException(
+                            status_code=415,
+                            detail=f"This file doesn't appear to be a valid audio/video file. Detected type: {detected_type}. Please ensure you're uploading a supported media file."
+                        )
             
             # Check if this is the last chunk
             if chunk.get('type') == 'http.request' and not chunk.get('more_body', False):

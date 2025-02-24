@@ -87,11 +87,25 @@ CREATE TABLE jobs (
     file_id UUID NOT NULL REFERENCES files(id),
     user_id UUID NOT NULL REFERENCES users(id),
     status VARCHAR(50) NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 1,
+    progress FLOAT NOT NULL DEFAULT 0.0,
     error_message TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    next_retry_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    locked_by TEXT,
+    locked_at TIMESTAMP WITH TIME ZONE,
+    metadata JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_file FOREIGN KEY(file_id) REFERENCES files(id),
-    CONSTRAINT fk_user FOREIGN KEY(user_id) REFERENCES users(id)
+    CONSTRAINT fk_user FOREIGN KEY(user_id) REFERENCES users(id),
+    CONSTRAINT valid_progress CHECK (progress >= 0.0 AND progress <= 100.0),
+    CONSTRAINT valid_retry_count CHECK (retry_count >= 0),
+    CONSTRAINT valid_max_retries CHECK (max_retries > 0),
+    CONSTRAINT valid_priority CHECK (priority >= 0 AND priority <= 3)
 );
 
 CREATE TABLE vocabulary (
@@ -103,6 +117,61 @@ CREATE TABLE vocabulary (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_user FOREIGN KEY(user_id) REFERENCES users(id)
 );
+
+-- Create indexes
+CREATE INDEX idx_job_queue ON jobs (status, priority DESC, next_retry_at)
+WHERE status = 'pending';
+
+CREATE INDEX idx_job_locks ON jobs (locked_by, locked_at)
+WHERE locked_by IS NOT NULL;
+
+-- Add function to release stale locks
+CREATE OR REPLACE FUNCTION release_stale_job_locks(max_lock_duration_minutes INTEGER)
+RETURNS INTEGER AS $$
+DECLARE
+    released_count INTEGER;
+BEGIN
+    WITH updated_jobs AS (
+        UPDATE jobs
+        SET 
+            status = 'pending',
+            locked_by = NULL,
+            locked_at = NULL,
+            retry_count = LEAST(retry_count + 1, max_retries),
+            next_retry_at = CASE 
+                WHEN retry_count < max_retries THEN NOW() + (INTERVAL '1 minute' * POWER(2, retry_count))
+                ELSE NULL
+            END
+        WHERE 
+            status = 'processing'
+            AND locked_by IS NOT NULL
+            AND locked_at < NOW() - (max_lock_duration_minutes * INTERVAL '1 minute')
+        RETURNING id
+    )
+    SELECT COUNT(*) INTO released_count FROM updated_jobs;
+
+    RETURN released_count;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Add function to notify job updates
+CREATE OR REPLACE FUNCTION notify_job_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Notify on job status changes
+    IF OLD.status IS NULL OR NEW.status != OLD.status THEN
+        PERFORM pg_notify(
+            'job_updates',
+            json_build_object(
+                'job_id', NEW.id,
+                'status', NEW.status,
+                'user_id', NEW.user_id
+            )::text
+        );
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
 -- Create triggers for updated_at
 CREATE TRIGGER update_users_modtime
@@ -139,6 +208,12 @@ CREATE TRIGGER update_vocabulary_modtime
     BEFORE UPDATE ON vocabulary
     FOR EACH ROW
     EXECUTE FUNCTION update_modified_column();
+
+-- Add trigger for job updates
+CREATE TRIGGER job_update_notify
+    AFTER UPDATE ON jobs
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_job_update();
 
 -- Grant permissions
 GRANT CONNECT ON DATABASE transcribo TO transcribo_user;

@@ -45,11 +45,39 @@ class Settings(BaseSettings):
     MINIO_REGION: str = Field("us-east-1", description="MinIO region")
     MINIO_SECURE: bool = Field(False, description="Use TLS for MinIO")
     
+    # Encryption settings
+    ENCRYPTION_KEY_NAME: str = Field(..., description="Name of the encryption key in Azure KeyVault or local key")
+    ENCRYPTION_KEY: Optional[str] = Field(None, description="Local encryption key (if not using Azure KeyVault)")
+    
     # Azure KeyVault settings (optional)
     AZURE_KEYVAULT_URL: Optional[AnyHttpUrl] = Field(None, description="Azure KeyVault URL")
     AZURE_TENANT_ID: Optional[str] = Field(None, description="Azure tenant ID")
     AZURE_CLIENT_ID: Optional[str] = Field(None, description="Azure client ID")
     AZURE_CLIENT_SECRET: Optional[str] = Field(None, description="Azure client secret")
+    
+    @validator('ENCRYPTION_KEY')
+    def validate_encryption_settings(cls, v, values):
+        """Validate that either local key or Azure KeyVault is configured."""
+        azure_configured = all([
+            values.get('AZURE_KEYVAULT_URL'),
+            values.get('AZURE_TENANT_ID'),
+            values.get('AZURE_CLIENT_ID'),
+            values.get('AZURE_CLIENT_SECRET')
+        ])
+        
+        if not v and not azure_configured:
+            raise ValueError(
+                "Either ENCRYPTION_KEY must be set for local encryption, "
+                "or all Azure KeyVault settings must be configured"
+            )
+        
+        if v and azure_configured:
+            raise ValueError(
+                "Cannot use both local encryption key and Azure KeyVault. "
+                "Choose one encryption method."
+            )
+            
+        return v
     
     # Transcriber settings
     TRANSCRIBER_URL: AnyHttpUrl = Field(..., description="Transcriber service URL")
@@ -92,19 +120,30 @@ class Settings(BaseSettings):
         description="Content Security Policy directives"
     )
     
-    @validator('AZURE_CLIENT_SECRET')
-    def validate_azure_settings(cls, v, values):
-        """Validate that all Azure settings are provided if any are."""
+    @validator('AZURE_CLIENT_SECRET', 'AZURE_KEYVAULT_URL', 'AZURE_TENANT_ID', 'AZURE_CLIENT_ID')
+    def validate_azure_settings(cls, v, values, field):
+        """Validate Azure KeyVault settings."""
+        # Skip if this is not the last Azure setting being validated
+        if field.name != 'AZURE_CLIENT_SECRET':
+            return v
+            
         azure_settings = [
             values.get('AZURE_KEYVAULT_URL'),
             values.get('AZURE_TENANT_ID'),
             values.get('AZURE_CLIENT_ID'),
             v
         ]
+        
+        # If any Azure setting is provided, all must be provided
         if any(azure_settings) and not all(azure_settings):
             raise ValueError(
-                "All Azure KeyVault settings must be provided if using Azure KeyVault"
+                "All Azure KeyVault settings must be provided if using Azure KeyVault:\n"
+                "- AZURE_KEYVAULT_URL\n"
+                "- AZURE_TENANT_ID\n"
+                "- AZURE_CLIENT_ID\n"
+                "- AZURE_CLIENT_SECRET"
             )
+            
         return v
     
     @validator('POSTGRES_HOST')

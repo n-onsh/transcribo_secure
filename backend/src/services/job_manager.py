@@ -4,9 +4,10 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import os
 import json
+import uuid
+import httpx
 from .database import DatabaseService
 from .storage import StorageService
-import httpx
 from ..models.job import Job, JobStatus, JobPriority, JobFilter, JobUpdate, Transcription
 from ..utils.exceptions import (
     ResourceNotFoundError,
@@ -31,36 +32,26 @@ class JobManager:
         """Initialize job manager"""
         self.db = db or DatabaseService()
         self.storage = storage or StorageService()
+        
         # Transcriber service URL
         self.transcriber_url = os.getenv("TRANSCRIBER_URL", "http://transcriber:8000")
         
-        # Background tasks and queues
-        self.processing_task: Optional[asyncio.Task] = None
-        self.cleanup_task: Optional[asyncio.Task] = None
-        self.active_jobs: Dict[str, asyncio.Task] = {}
-        self.job_queue: asyncio.Queue = asyncio.Queue()
-        self.worker_tasks: List[asyncio.Task] = []
-        
-        # Processing settings
+        # Worker settings
+        self.worker_id = str(uuid.uuid4())
         self.max_concurrent_jobs = int(os.getenv("MAX_CONCURRENT_JOBS", "2"))
         self.job_timeout = int(os.getenv("JOB_TIMEOUT_MINUTES", "120"))
         self.cleanup_days = int(os.getenv("JOB_CLEANUP_DAYS", "30"))
         self.max_retries = int(os.getenv("MAX_JOB_RETRIES", "3"))
         
-        # Priority settings
-        self.priority_weights = {
-            JobPriority.LOW: 1,
-            JobPriority.NORMAL: 2,
-            JobPriority.HIGH: 4,
-            JobPriority.URGENT: 8
-        }
+        # Background tasks
+        self.worker_tasks: List[asyncio.Task] = []
+        self.cleanup_task: Optional[asyncio.Task] = None
+        self.health_check_task: Optional[asyncio.Task] = None
         
-        # Dynamic concurrency
-        self.min_concurrent_jobs = 1
-        self.max_concurrent_jobs = 4
-        self.current_load = 0.0  # 0.0 to 1.0
+        # Active jobs
+        self.active_jobs: Dict[str, Job] = {}
         
-        logger.info("Job manager initialized")
+        logger.info(f"Job manager initialized with worker ID {self.worker_id}")
 
     async def start(self):
         """Start background tasks"""
@@ -68,14 +59,17 @@ class JobManager:
             # Initialize services
             await self.db.initialize_database()
             
+            # Subscribe to job updates
+            await self.db.subscribe_to_job_updates(self.worker_id, self._handle_job_update)
+            
             # Start worker tasks
             for _ in range(self.max_concurrent_jobs):
                 task = asyncio.create_task(self._job_worker())
                 self.worker_tasks.append(task)
             
-            # Start job scheduler and cleanup
-            self.processing_task = asyncio.create_task(self._schedule_jobs())
+            # Start cleanup and health check tasks
             self.cleanup_task = asyncio.create_task(self._cleanup_old_jobs())
+            self.health_check_task = asyncio.create_task(self._health_check())
             
             logger.info(f"Job manager started with {self.max_concurrent_jobs} workers")
             
@@ -87,22 +81,23 @@ class JobManager:
         """Stop background tasks"""
         try:
             # Cancel all tasks
-            if self.processing_task:
-                self.processing_task.cancel()
-            if self.cleanup_task:
-                self.cleanup_task.cancel()
-            
-            # Cancel worker tasks
             for task in self.worker_tasks:
                 task.cancel()
+            if self.cleanup_task:
+                self.cleanup_task.cancel()
+            if self.health_check_task:
+                self.health_check_task.cancel()
             
             # Wait for tasks to complete
             await asyncio.gather(
                 *self.worker_tasks,
-                self.processing_task,
                 self.cleanup_task,
+                self.health_check_task,
                 return_exceptions=True
             )
+            
+            # Unsubscribe from job updates
+            await self.db.unsubscribe_from_job_updates(self.worker_id)
             
             # Close services
             await self.db.close()
@@ -281,11 +276,6 @@ class JobManager:
                     detail=f"Cannot cancel job in {job.status} status"
                 )
             
-            # Cancel active task if exists
-            if job.id in self.active_jobs:
-                self.active_jobs[job.id].cancel()
-                del self.active_jobs[job.id]
-            
             # Update job status
             job.cancel()
             await self.db.update_job(job)
@@ -328,33 +318,27 @@ class JobManager:
             logger.error(f"Failed to retry job: {str(e)}")
             raise
 
-    def _adjust_concurrency(self):
-        """Adjust max concurrent jobs based on system load"""
+    async def _handle_job_update(self, data: Dict):
+        """Handle job update notification"""
         try:
-            # Update current load (simplified example)
-            self.current_load = len(self.active_jobs) / self.max_concurrent_jobs
+            job_id = data.get('job_id')
+            status = data.get('status')
+            worker_id = data.get('worker_id')
             
-            # Adjust max concurrent jobs
-            if self.current_load > 0.8 and self.max_concurrent_jobs > self.min_concurrent_jobs:
-                self.max_concurrent_jobs -= 1
-            elif self.current_load < 0.5 and self.max_concurrent_jobs < self.max_concurrent_jobs:
-                self.max_concurrent_jobs += 1
+            if job_id in self.active_jobs and worker_id != self.worker_id:
+                logger.warning(f"Job {job_id} taken by worker {worker_id}")
+                self.active_jobs.pop(job_id, None)
                 
         except Exception as e:
-            logger.error(f"Failed to adjust concurrency: {str(e)}")
+            logger.error(f"Error handling job update: {str(e)}")
 
     @track_time(JOB_PROCESSING_DURATION, {"operation": "process"})
     async def _process_job(self, job: Job):
         """Process a single job"""
         start_time = time.time()
         try:
-            # Start processing
-            job.start_processing()
-            await self.db.update_job(job)
-            
-            # Update metrics
-            increment_counter(JOBS_TOTAL, {"status": job.status})
-            update_gauge(JOB_QUEUE_SIZE, -1, {"priority": job.priority.name})
+            # Add to active jobs
+            self.active_jobs[job.id] = job
             
             # Get audio file
             audio_data = await self.storage.retrieve_file(
@@ -422,62 +406,29 @@ class JobManager:
             
         finally:
             # Remove from active jobs
-            if job.id in self.active_jobs:
-                del self.active_jobs[job.id]
+            self.active_jobs.pop(job.id, None)
 
     async def _job_worker(self):
-        """Worker task to process jobs from queue"""
+        """Worker task to process jobs"""
         while True:
             try:
-                # Get job from queue
-                job = await self.job_queue.get()
-                
-                try:
-                    # Process job
-                    await self._process_job(job)
-                except Exception as e:
-                    logger.error(f"Error processing job {job.id}: {str(e)}")
-                finally:
-                    # Mark task as done
-                    self.job_queue.task_done()
+                # Try to claim a job
+                job = await self.db.claim_job(self.worker_id)
+                if job:
+                    try:
+                        # Process job
+                        await self._process_job(job)
+                    except Exception as e:
+                        logger.error(f"Error processing job {job.id}: {str(e)}")
+                else:
+                    # No jobs available, wait before trying again
+                    await asyncio.sleep(5)
                     
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in job worker: {str(e)}")
                 await asyncio.sleep(1)
-
-    async def _schedule_jobs(self):
-        """Background task to schedule pending jobs"""
-        while True:
-            try:
-                # Get pending jobs
-                pending_jobs = await self.db.list_jobs(
-                    filter=JobFilter(status=JobStatus.PENDING)
-                )
-                
-                # Sort by priority and retry time
-                pending_jobs.sort(
-                    key=lambda j: (
-                        -self.priority_weights[j.priority],  # Higher priority first
-                        j.next_retry_at or datetime.max,     # Earlier retry time first
-                        j.created_at                         # Older jobs first
-                    )
-                )
-                
-                # Add jobs to queue
-                for job in pending_jobs:
-                    if job.should_process():
-                        await self.job_queue.put(job)
-                
-                # Wait before next scheduling round
-                await asyncio.sleep(5)
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in job scheduler: {str(e)}")
-                await asyncio.sleep(10)
 
     async def _cleanup_old_jobs(self):
         """Background task to clean up old jobs"""
@@ -489,9 +440,27 @@ class JobManager:
                 # Sleep for a day
                 await asyncio.sleep(24 * 60 * 60)
                 
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {str(e)}")
                 await asyncio.sleep(60 * 60)
+
+    async def _health_check(self):
+        """Background task to check worker health"""
+        while True:
+            try:
+                # Release stale jobs
+                await self.db.release_stale_jobs(self.job_timeout)
+                
+                # Sleep for a minute
+                await asyncio.sleep(60)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in health check: {str(e)}")
+                await asyncio.sleep(10)
 
     async def _update_progress(self, job_id: str, progress: float):
         """Update job progress"""

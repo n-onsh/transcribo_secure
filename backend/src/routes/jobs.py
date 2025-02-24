@@ -1,150 +1,212 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status
 from typing import List, Optional
-from uuid import UUID
-from ..models.job import Job, JobStatus, JobUpdate
-from ..services.database import DatabaseService
-from ..services.job_manager import JobManager
-import logging
+from ..models.job import JobResponse, JobUpdate
+from ..services.interfaces import JobManagerInterface
+from ..services.provider import service_provider
+from ..utils.exceptions import ResourceNotFoundError, AuthorizationError
+from ..utils.metrics import track_time, DB_OPERATION_DURATION
 
-router = APIRouter()
-logger = logging.getLogger(__name__)
+router = APIRouter(
+    prefix="/jobs",
+    tags=["jobs"]
+)
 
-# Dependency to get services
-async def get_services():
-    db = DatabaseService()
-    job_manager = JobManager(db)
-    try:
-        yield {"db": db, "job_manager": job_manager}
-    finally:
-        await db.close()
-
-@router.get("/jobs/{job_id}", response_model=Job)
+@router.get(
+    "/{job_id}",
+    response_model=JobResponse,
+    summary="Get Job",
+    description="Get job status and information"
+)
+@track_time(DB_OPERATION_DURATION, {"operation": "get_job"})
 async def get_job(
-    job_id: UUID,
-    services: dict = Depends(get_services)
+    job_id: str,
+    user_id: str = None  # Set by auth middleware
 ):
-    """Get job status and details"""
-    job = await services["db"].get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    """Get job information"""
+    try:
+        # Get required services
+        job_manager = service_provider.get(JobManagerInterface)
+        if not job_manager:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service unavailable"
+            )
 
-@router.get("/jobs/user/{user_id}", response_model=List[Job])
-async def list_user_jobs(
-    user_id: str,
-    status: Optional[JobStatus] = None,
-    limit: int = 100,
-    offset: int = 0,
-    services: dict = Depends(get_services)
+        # Get job
+        job = await job_manager.get_job(job_id, user_id)
+        if not job:
+            raise ResourceNotFoundError("job", job_id)
+
+        return JobResponse(
+            id=job.id,
+            file_name=job.file_name,
+            status=job.status,
+            progress=job.progress,
+            error=job.error,
+            created_at=job.created_at,
+            completed_at=job.completed_at
+        )
+
+    except ResourceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found"
+        )
+    except AuthorizationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.get(
+    "/",
+    response_model=List[JobResponse],
+    summary="List Jobs",
+    description="List jobs for the authenticated user"
+)
+@track_time(DB_OPERATION_DURATION, {"operation": "list_jobs"})
+async def list_jobs(
+    user_id: str = None,  # Set by auth middleware
+    limit: Optional[int] = 100,
+    offset: Optional[int] = 0
 ):
     """List jobs for a user"""
-    jobs = await services["db"].get_jobs_by_user(
-        user_id,
-        status=status,
-        limit=limit,
-        offset=offset
-    )
-    return jobs
-
-@router.post("/jobs/{job_id}/cancel")
-async def cancel_job(
-    job_id: UUID,
-    services: dict = Depends(get_services)
-):
-    """Cancel a pending or processing job"""
-    job = await services["db"].get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    if job.status not in [JobStatus.PENDING, JobStatus.PROCESSING]:
-        raise HTTPException(
-            status_code=400,
-            detail="Can only cancel pending or processing jobs"
-        )
-    
-    update = JobUpdate(
-        status=JobStatus.FAILED,
-        error_message="Job cancelled by user"
-    )
-    updated_job = await services["job_manager"].update_job(job_id, update)
-    return updated_job
-
-@router.post("/jobs/{job_id}/status")
-async def update_job_status(
-    job_id: UUID,
-    update: JobUpdate,
-    background_tasks: BackgroundTasks,
-    services: dict = Depends(get_services)
-):
-    """Update job status from transcriber service"""
-    job = await services["db"].get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
     try:
-        updated_job = await services["job_manager"].update_job(job_id, update)
-        
-        # If job is completed successfully, schedule cleanup
-        if update.status == JobStatus.COMPLETED:
-            logger.info(f"Job {job_id} completed successfully")
-            # Could add cleanup tasks here in the future
-            
-        # If job failed, log error
-        elif update.status == JobStatus.FAILED:
-            logger.error(f"Job {job_id} failed: {update.error_message}")
-            
-        return updated_job
-        
-    except Exception as e:
-        logger.error(f"Error updating job {job_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to update job status: {str(e)}"
+        # Get required services
+        job_manager = service_provider.get(JobManagerInterface)
+        if not job_manager:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service unavailable"
+            )
+
+        # Get jobs
+        jobs = await job_manager.list_jobs(
+            user_id=user_id,
+            limit=limit,
+            offset=offset
         )
 
-@router.post("/jobs/retry/{job_id}")
+        return [
+            JobResponse(
+                id=job.id,
+                file_name=job.file_name,
+                status=job.status,
+                progress=job.progress,
+                error=job.error,
+                created_at=job.created_at,
+                completed_at=job.completed_at
+            )
+            for job in jobs
+        ]
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.post(
+    "/{job_id}/cancel",
+    response_model=JobResponse,
+    summary="Cancel Job",
+    description="Cancel a running job"
+)
+@track_time(DB_OPERATION_DURATION, {"operation": "cancel_job"})
+async def cancel_job(
+    job_id: str,
+    user_id: str = None  # Set by auth middleware
+):
+    """Cancel a job"""
+    try:
+        # Get required services
+        job_manager = service_provider.get(JobManagerInterface)
+        if not job_manager:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service unavailable"
+            )
+
+        # Cancel job
+        job = await job_manager.cancel_job(job_id, user_id)
+
+        return JobResponse(
+            id=job.id,
+            file_name=job.file_name,
+            status=job.status,
+            progress=job.progress,
+            error=job.error,
+            created_at=job.created_at,
+            completed_at=job.completed_at
+        )
+
+    except ResourceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found"
+        )
+    except AuthorizationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.post(
+    "/{job_id}/retry",
+    response_model=JobResponse,
+    summary="Retry Job",
+    description="Retry a failed job"
+)
+@track_time(DB_OPERATION_DURATION, {"operation": "retry_job"})
 async def retry_job(
-    job_id: UUID,
-    services: dict = Depends(get_services)
+    job_id: str,
+    user_id: str = None  # Set by auth middleware
 ):
     """Retry a failed job"""
-    job = await services["db"].get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    if job.status != JobStatus.FAILED:
-        raise HTTPException(
-            status_code=400,
-            detail="Can only retry failed jobs"
-        )
-    
-    # Reset job status to pending
-    update = JobUpdate(
-        status=JobStatus.PENDING,
-        error_message=None,
-        progress=0.0
-    )
-    updated_job = await services["job_manager"].update_job(job_id, update)
-    return updated_job
-
-@router.get("/jobs/queue/status")
-async def get_queue_status(
-    services: dict = Depends(get_services)
-):
-    """Get current status of the job queue"""
     try:
-        # Get counts for each status
-        stats = await services["db"].get_job_stats()
-        return {
-            "queue_length": stats.get("pending", 0),
-            "processing": stats.get("processing", 0),
-            "completed": stats.get("completed", 0),
-            "failed": stats.get("failed", 0),
-            "total": sum(stats.values())
-        }
-    except Exception as e:
-        logger.error(f"Error getting queue status: {str(e)}")
+        # Get required services
+        job_manager = service_provider.get(JobManagerInterface)
+        if not job_manager:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service unavailable"
+            )
+
+        # Retry job
+        job = await job_manager.retry_job(job_id, user_id)
+
+        return JobResponse(
+            id=job.id,
+            file_name=job.file_name,
+            status=job.status,
+            progress=job.progress,
+            error=job.error,
+            created_at=job.created_at,
+            completed_at=job.completed_at
+        )
+
+    except ResourceNotFoundError:
         raise HTTPException(
-            status_code=500,
-            detail="Failed to get queue status"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found"
+        )
+    except AuthorizationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
         )
