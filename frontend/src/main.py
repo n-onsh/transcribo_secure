@@ -5,20 +5,22 @@ import time
 import asyncio
 from pathlib import Path
 from .utils import setup_telemetry
-from .utils.metrics import (
-    http_requests_total,
-    http_request_duration,
-    file_upload_total,
-    job_status_total
-)
 from .services.provider import FrontendServiceProvider
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize OpenTelemetry
+# Initialize OpenTelemetry first
 setup_telemetry(app)
+
+# Now import metrics after OpenTelemetry is initialized
+from .utils.metrics import (
+    http_requests_total,
+    http_request_duration,
+    file_upload_total,
+    job_status_total
+)
 
 # Global service provider
 service_provider = FrontendServiceProvider()

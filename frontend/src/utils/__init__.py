@@ -1,11 +1,10 @@
 from opentelemetry import trace
 from opentelemetry import metrics as otel_metrics
-from .metrics import setup_metrics
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -18,7 +17,8 @@ def setup_telemetry(app):
     # Set up tracing
     tracer_provider = TracerProvider(resource=resource)
     otlp_span_exporter = OTLPSpanExporter(
-        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318") + "/v1/traces"
+        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317"),
+        insecure=True
     )
     span_processor = BatchSpanProcessor(otlp_span_exporter)
     tracer_provider.add_span_processor(span_processor)
@@ -27,7 +27,8 @@ def setup_telemetry(app):
     # Set up metrics with OTLP exporter
     otlp_metric_reader = PeriodicExportingMetricReader(
         OTLPMetricExporter(
-            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318") + "/v1/metrics"
+            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317"),
+            insecure=True
         ),
         export_interval_millis=10000  # Export every 10 seconds
     )
@@ -37,9 +38,6 @@ def setup_telemetry(app):
         views=[]  # Use default views
     )
     otel_metrics.set_meter_provider(meter_provider)
-
-    # Set up metrics
-    setup_metrics()
 
     # Instrument FastAPI with OpenTelemetry
     FastAPIInstrumentor.instrument_app(app)

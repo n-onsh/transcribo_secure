@@ -3,8 +3,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.prometheus import PrometheusMetricExporter
@@ -18,7 +18,8 @@ def setup_telemetry(app):
     # Set up tracing
     tracer_provider = TracerProvider(resource=resource)
     otlp_span_exporter = OTLPSpanExporter(
-        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318") + "/v1/traces"
+        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317"),
+        insecure=True
     )
     span_processor = BatchSpanProcessor(otlp_span_exporter)
     tracer_provider.add_span_processor(span_processor)
@@ -27,7 +28,8 @@ def setup_telemetry(app):
     # Set up metrics with both OTLP and Prometheus exporters
     otlp_metric_reader = PeriodicExportingMetricReader(
         OTLPMetricExporter(
-            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318") + "/v1/metrics"
+            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4317"),
+            insecure=True
         )
     )
     prometheus_exporter = PrometheusMetricExporter()

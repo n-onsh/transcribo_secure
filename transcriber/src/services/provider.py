@@ -2,6 +2,8 @@ import logging
 from typing import Dict, Optional, Protocol
 from pathlib import Path
 import httpx
+import os
+from datetime import datetime
 from pydantic_settings import BaseSettings
 from .transcription import TranscriptionService
 
@@ -55,14 +57,14 @@ class BackendClient(BackendClientInterface):
     """Client for backend API"""
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.headers = {"X-Encryption-Key": os.getenv("ENCRYPTION_KEY")}
+        self.headers = {"X-Encryption-Key": os.getenv("ENCRYPTION_KEY", "")}
 
     async def get_next_job(self) -> Optional[Dict]:
         """Get next available job"""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.settings.backend_api_url}/jobs/next",
+                    f"{self.settings.backend_api_url}/api/v1/jobs/next",
                     headers=self.headers
                 )
                 if response.status_code == 200:
@@ -82,7 +84,7 @@ class BackendClient(BackendClientInterface):
         
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                f"{self.settings.backend_api_url}/files/{file_id}/download",
+                f"{self.settings.backend_api_url}/api/v1/files/{file_id}/download",
                 timeout=None,
                 headers=self.headers
             )
@@ -97,7 +99,7 @@ class BackendClient(BackendClientInterface):
         """Upload transcription results"""
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{self.settings.backend_api_url}/jobs/{job_id}/results",
+                f"{self.settings.backend_api_url}/api/v1/jobs/{job_id}/results",
                 json=results,
                 headers=self.headers
             )
@@ -119,7 +121,7 @@ class BackendClient(BackendClientInterface):
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{self.settings.backend_api_url}/jobs/{job_id}/status",
+                f"{self.settings.backend_api_url}/api/v1/jobs/{job_id}/status",
                 json=data,
                 headers=self.headers
             )

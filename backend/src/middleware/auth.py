@@ -58,6 +58,10 @@ class AuthMiddleware:
             path = request.url.path
             headers = request.headers
             
+            # Initialize request state
+            if not hasattr(request.state, "user"):
+                request.state.user = None
+            
             # Skip auth for public paths
             if path in self.public_paths:
                 return await call_next(request)
@@ -87,53 +91,58 @@ class AuthMiddleware:
             
             # Extract and validate token
             token = auth_header.split(" ")[1]
-            try:
-                # Validate token
-                token_data = self.token_validator.validate_token(token)
-                
-                # Get user info
-                user_info = self.token_validator.get_user_info(token_data)
-                
-                # Map roles
-                azure_roles = user_info.get("roles", [])
-                system_roles = self._map_azure_roles(azure_roles)
-                
-                # Add user to request state
-                request.state.user = {
-                    "id": user_info["id"],
-                    "email": user_info["email"],
-                    "name": user_info["name"],
-                    "roles": system_roles,
-                    "groups": user_info["groups"],
-                    "type": "user"
-                }
-                
-                return await call_next(request)
-                
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Token validation failed: {str(e)}")
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid authentication token"
-                )
+            
+            # Validate token
+            token_data = self.token_validator.validate_token(token)
+            
+            # Get user info
+            user_info = self.token_validator.get_user_info(token_data)
+            
+            # Map roles
+            azure_roles = user_info.get("roles", [])
+            system_roles = self._map_azure_roles(azure_roles)
+            
+            # Add user to request state
+            request.state.user = {
+                "id": user_info["id"],
+                "email": user_info["email"],
+                "name": user_info["name"],
+                "roles": system_roles,
+                "groups": user_info["groups"],
+                "type": "user"
+            }
+            
+            return await call_next(request)
             
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Auth middleware error: {str(e)}")
+            logger.error(f"Auth middleware error: {str(e)}", 
+                        extra={
+                            "logger": "src.middleware.auth",
+                            "path": request.url.path,
+                            "line": 121,
+                            "func": "__call__",
+                            "request_id": request.headers.get("X-Request-ID"),
+                            "method": request.method,
+                            "client_host": request.client.host if request.client else None
+                        })
             raise HTTPException(
                 status_code=500,
                 detail="Internal server error"
             )
-
 
     def require_roles(self, roles: List[str]):
         """Decorator to require specific roles"""
         def decorator(func):
             async def wrapper(request: Request, *args, **kwargs):
                 # Get user roles
+                if not request.state.user:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Authentication required"
+                    )
+                
                 user_roles = request.state.user.get("roles", [])
                 
                 # Check if user has required role
@@ -149,12 +158,14 @@ class AuthMiddleware:
 
     def has_role(self, request: Request, role: str) -> bool:
         """Check if user has role"""
+        if not request.state.user:
+            return False
         return role in request.state.user.get("roles", [])
 
     def is_service(self, request: Request) -> bool:
         """Check if request is from a service"""
         return self.has_role(request, "service")
 
-    def get_user(self, request: Request) -> Dict:
+    def get_user(self, request: Request) -> Optional[Dict]:
         """Get user from request"""
         return request.state.user
