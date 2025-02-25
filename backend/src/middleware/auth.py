@@ -1,11 +1,11 @@
 from fastapi import Request, HTTPException
-import logging
 from typing import Dict, Optional, List
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 import os
-from .rate_limiter import RateLimiter
 from ..utils.token_validation import TokenValidator
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class AuthMiddleware:
     def __init__(self):
@@ -19,11 +19,12 @@ class AuthMiddleware:
         try:
             self.token_validator = TokenValidator()
         except Exception as e:
-            logger.error(f"Failed to initialize token validator: {str(e)}")
+            logger.emit(
+                "Failed to initialize token validator",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
-        
-        # Initialize rate limiter with FastAPI app
-        self.rate_limiter = None  # Will be set when used in FastAPI middleware
         
         # Public paths that don't require authentication
         self.public_paths = {
@@ -40,7 +41,14 @@ class AuthMiddleware:
             "Service": ["service"]
         }
         
-        logger.info("Auth middleware initialized")
+        logger.emit(
+            "Auth middleware initialized",
+            severity=Severity.INFO,
+            attributes={
+                "public_paths": list(self.public_paths),
+                "role_mappings": self.role_mappings
+            }
+        )
 
     def _map_azure_roles(self, azure_roles: List[str]) -> List[str]:
         """Map Azure AD roles to system roles"""
@@ -112,21 +120,30 @@ class AuthMiddleware:
                 "type": "user"
             }
             
-            return await call_next(request)
+            # Call next middleware/route handler
+            response = await call_next(request)
+            return response
             
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Auth middleware error: {str(e)}", 
-                        extra={
-                            "logger": "src.middleware.auth",
-                            "path": request.url.path,
-                            "line": 121,
-                            "func": "__call__",
-                            "request_id": request.headers.get("X-Request-ID"),
-                            "method": request.method,
-                            "client_host": request.client.host if request.client else None
-                        })
+            # Get request details before potential attribute errors
+            path = str(request.url.path) if request.url else "unknown"
+            headers = dict(request.headers) if request.headers else {}
+            method = request.method if hasattr(request, "method") else "unknown"
+            client = request.client.host if request.client else "unknown"
+            
+            logger.emit(
+                "Auth middleware error",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "path": path,
+                    "request_id": headers.get("X-Request-ID"),
+                    "method": method,
+                    "client_host": client
+                }
+            )
             raise HTTPException(
                 status_code=500,
                 detail="Internal server error"

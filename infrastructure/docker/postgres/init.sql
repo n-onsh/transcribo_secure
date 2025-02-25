@@ -56,14 +56,14 @@ CREATE TABLE user_keys (
 
 CREATE TABLE files (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id),
+    owner_id UUID NOT NULL REFERENCES users(id),
     name VARCHAR(255) NOT NULL,
-    type VARCHAR(50) NOT NULL,
+    bucket_type VARCHAR(50) NOT NULL,
     size BIGINT NOT NULL,
     metadata JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_user FOREIGN KEY(user_id) REFERENCES users(id)
+    CONSTRAINT fk_owner FOREIGN KEY(owner_id) REFERENCES users(id)
 );
 
 CREATE TABLE file_keys (

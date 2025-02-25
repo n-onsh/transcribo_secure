@@ -1,14 +1,15 @@
 import os
-import logging
 import gzip
 import asyncio
 import io
-from typing import Optional, Dict, List, BinaryIO
+from typing import Optional, Dict, List, BinaryIO, Callable
 from minio import Minio
 from minio.error import S3Error
 from datetime import datetime, timedelta
 import tempfile
 import magic
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from ..models.file_key import FileKeyCreate
 from ..services.interfaces import (
     StorageInterface,
@@ -25,7 +26,7 @@ from ..utils.metrics import (
     update_gauge
 )
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class StorageService(StorageInterface):
     def __init__(
@@ -112,15 +113,25 @@ class StorageService(StorageInterface):
                 exists = await asyncio.to_thread(self.client.bucket_exists, bucket_name)
                 if not exists:
                     await asyncio.to_thread(self.client.make_bucket, bucket_name)
-                    logger.info(f"Created bucket: {bucket_name}")
+                    logger.emit(
+                        f"Created bucket: {bucket_name}",
+                        severity=Severity.INFO
+                    )
                 
                 # Note: Bucket versioning is not supported in minio-py 7.1.17
                 # We'll handle versioning at the application level if needed
                 if bucket_config["versioned"]:
-                    logger.info(f"Bucket versioning configured for: {bucket_name}")
+                    logger.emit(
+                        f"Bucket versioning configured for: {bucket_name}",
+                        severity=Severity.INFO
+                    )
             
         except Exception as e:
-            logger.error(f"Failed to initialize buckets: {str(e)}")
+            logger.emit(
+                "Failed to initialize buckets",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def _get_object_path(self, user_id: str, file_name: str) -> str:
@@ -156,7 +167,11 @@ class StorageService(StorageInterface):
                     )
                     
         except Exception as e:
-            logger.error(f"File validation failed: {str(e)}")
+            logger.emit(
+                "File validation failed",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def _compress_data(self, data: bytes) -> bytes:
@@ -164,7 +179,11 @@ class StorageService(StorageInterface):
         try:
             return gzip.compress(data)
         except Exception as e:
-            logger.error(f"Data compression failed: {str(e)}")
+            logger.emit(
+                "Data compression failed",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def _decompress_data(self, data: bytes) -> bytes:
@@ -172,7 +191,11 @@ class StorageService(StorageInterface):
         try:
             return gzip.decompress(data)
         except Exception as e:
-            logger.error(f"Data decompression failed: {str(e)}")
+            logger.emit(
+                "Data decompression failed",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "store", "bucket": "unknown"})
@@ -185,7 +208,8 @@ class StorageService(StorageInterface):
         bucket_type: str,
         file_id: Optional[str] = None,
         compress: bool = True,
-        chunk_size: int = 8 * 1024 * 1024  # 8MB chunks
+        chunk_size: int = 8 * 1024 * 1024,  # 8MB chunks
+        progress_callback: Optional[Callable[[float], None]] = None
     ):
         """Store file in bucket using streaming"""
         try:
@@ -201,15 +225,25 @@ class StorageService(StorageInterface):
             with tempfile.NamedTemporaryFile(delete=False) as temp:
                 temp_path = temp.name
                 
+                # Get total size for progress tracking
+                data.seek(0, 2)  # Seek to end
+                total_size = data.tell()
+                data.seek(0)  # Reset to start
+                
                 # Process file in chunks
-                total_size = 0
+                processed_size = 0
                 chunks = []
                 while True:
                     chunk = data.read(chunk_size)
                     if not chunk:
                         break
                     chunks.append(chunk)
-                    total_size += len(chunk)
+                    processed_size += len(chunk)
+                    
+                    # Report progress
+                    if progress_callback:
+                        progress = (processed_size / total_size) * 100
+                        await progress_callback(progress)
                 
                 # Validate file size
                 if total_size > self.buckets[bucket_type]["max_size"]:
@@ -324,14 +358,31 @@ class StorageService(StorageInterface):
                 # Update storage metrics
                 await self.update_bucket_size_metric(bucket_type)
                 
-                logger.info(f"Stored encrypted file {file_name} for user {user_id}")
+                logger.emit(
+                    "Stored encrypted file",
+                    severity=Severity.INFO,
+                    attributes={
+                        "file_name": file_name,
+                        "user_id": user_id,
+                        "bucket": bucket_type
+                    }
+                )
                 
             finally:
                 # Clean up temp file
                 os.unlink(temp_path)
             
         except Exception as e:
-            logger.error(f"Failed to store file: {str(e)}")
+            logger.emit(
+                "Failed to store file",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_name": file_name,
+                    "user_id": user_id,
+                    "bucket": bucket_type
+                }
+            )
             raise
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "retrieve", "bucket": "unknown"})
@@ -401,7 +452,17 @@ class StorageService(StorageInterface):
                 os.unlink(temp_path)
             
         except Exception as e:
-            logger.error(f"Failed to retrieve file: {str(e)}")
+            logger.emit(
+                "Failed to retrieve file",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_name": file_name,
+                    "user_id": user_id,
+                    "bucket": bucket_type,
+                    "file_id": file_id
+                }
+            )
             raise
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "delete", "bucket": "unknown"})
@@ -430,10 +491,27 @@ class StorageService(StorageInterface):
             # Update storage metrics
             await self.update_bucket_size_metric(bucket_type)
             
-            logger.info(f"Deleted file {file_name} for user {user_id}")
+            logger.emit(
+                "Deleted file",
+                severity=Severity.INFO,
+                attributes={
+                    "file_name": file_name,
+                    "user_id": user_id,
+                    "bucket": bucket_type
+                }
+            )
             
         except Exception as e:
-            logger.error(f"Failed to delete file: {str(e)}")
+            logger.emit(
+                "Failed to delete file",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_name": file_name,
+                    "user_id": user_id,
+                    "bucket": bucket_type
+                }
+            )
             raise
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "list", "bucket": "unknown"})
@@ -489,7 +567,15 @@ class StorageService(StorageInterface):
             return files
             
         except Exception as e:
-            logger.error(f"Failed to list files: {str(e)}")
+            logger.emit(
+                "Failed to list files",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "bucket": bucket_type
+                }
+            )
             raise
 
     async def get_bucket_size(self, bucket_type: str) -> int:
@@ -509,7 +595,14 @@ class StorageService(StorageInterface):
             return total_size
             
         except Exception as e:
-            logger.error(f"Failed to get bucket size: {str(e)}")
+            logger.emit(
+                "Failed to get bucket size",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "bucket": bucket_type
+                }
+            )
             return 0
 
     async def update_bucket_size_metric(self, bucket_type: str):
@@ -518,7 +611,14 @@ class StorageService(StorageInterface):
             size = await self.get_bucket_size(bucket_type)
             update_gauge(STORAGE_BYTES, size, {"bucket": bucket_type})
         except Exception as e:
-            logger.error(f"Failed to update storage metrics: {str(e)}")
+            logger.emit(
+                "Failed to update storage metrics",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "bucket": bucket_type
+                }
+            )
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "cleanup", "bucket": "temp"})
     @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "cleanup", "bucket": "temp", "error_type": "unknown"})
@@ -548,5 +648,12 @@ class StorageService(StorageInterface):
             await self.update_bucket_size_metric("temp")
             
         except Exception as e:
-            logger.error(f"Failed to cleanup temp files: {str(e)}")
+            logger.emit(
+                "Failed to cleanup temp files",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "max_age": max_age
+                }
+            )
             raise

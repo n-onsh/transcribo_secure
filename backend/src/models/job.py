@@ -175,9 +175,9 @@ class Job(BaseModelWithTimestamps):
         default_factory=lambda: str(uuid.uuid4()),
         description="Unique identifier for the job"
     )
-    user_id: str = Field(
+    owner_id: str = Field(
         ...,
-        description="ID of the user who created the job",
+        description="ID of the user who owns the job",
         example="user123"
     )
     file_name: FileName = Field(
@@ -383,7 +383,7 @@ class JobFilter(BaseModel):
         filtered = jobs
         
         if self.user_id:
-            filtered = [j for j in filtered if j.user_id == self.user_id]
+            filtered = [j for j in filtered if j.owner_id == self.user_id]
             
         if self.status:
             filtered = [j for j in filtered if j.status == self.status]

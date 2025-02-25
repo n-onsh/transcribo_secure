@@ -1,6 +1,7 @@
 import os
-import logging
 from typing import Optional, Dict, List
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from pathlib import Path
 import json
 from datetime import datetime
@@ -8,7 +9,7 @@ from jinja2 import Environment, FileSystemLoader
 from ..models.job import Transcription, Speaker, Segment
 from .storage import StorageService
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class ViewerService:
     def __init__(self, storage: Optional[StorageService] = None):
@@ -34,7 +35,14 @@ class ViewerService:
         # Initialize storage
         self.storage = storage or StorageService()
         
-        logger.info("Viewer service initialized")
+        logger.emit(
+            "Viewer service initialized",
+            severity=Severity.INFO,
+            attributes={
+                "template_dir": str(self.template_dir),
+                "asset_dir": str(self.asset_dir)
+            }
+        )
 
     async def create_editor(
         self,
@@ -63,7 +71,15 @@ class ViewerService:
             return html
             
         except Exception as e:
-            logger.error(f"Failed to create editor: {str(e)}")
+            logger.emit(
+                "Failed to create editor",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def create_viewer(
@@ -111,7 +127,15 @@ class ViewerService:
             return html
             
         except Exception as e:
-            logger.error(f"Failed to create viewer: {str(e)}")
+            logger.emit(
+                "Failed to create viewer",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def save_editor_state(
@@ -130,10 +154,25 @@ class ViewerService:
                 "temp"
             )
             
-            logger.info(f"Saved editor state for job {job_id}")
+            logger.emit(
+                "Saved editor state",
+                severity=Severity.INFO,
+                attributes={
+                    "user_id": user_id,
+                    "job_id": job_id
+                }
+            )
             
         except Exception as e:
-            logger.error(f"Failed to save editor state: {str(e)}")
+            logger.emit(
+                "Failed to save editor state",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def load_editor_state(
@@ -153,7 +192,15 @@ class ViewerService:
             return json.loads(data) if data else None
             
         except Exception as e:
-            logger.error(f"Failed to load editor state: {str(e)}")
+            logger.emit(
+                "Failed to load editor state",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "job_id": job_id
+                }
+            )
             return None
 
     async def export_text(
@@ -197,7 +244,14 @@ class ViewerService:
             return "\n".join(text)
             
         except Exception as e:
-            logger.error(f"Failed to export text: {str(e)}")
+            logger.emit(
+                "Failed to export text",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "options": str(options)
+                }
+            )
             raise
 
     async def export_srt(
@@ -248,7 +302,14 @@ class ViewerService:
             return "\n".join(srt)
             
         except Exception as e:
-            logger.error(f"Failed to export SRT: {str(e)}")
+            logger.emit(
+                "Failed to export SRT",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "options": str(options)
+                }
+            )
             raise
 
     async def _process_segments(
@@ -310,7 +371,15 @@ class ViewerService:
             return processed
             
         except Exception as e:
-            logger.error(f"Failed to process segments: {str(e)}")
+            logger.emit(
+                "Failed to process segments",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "options": str(options),
+                    "segment_count": len(segments)
+                }
+            )
             raise
 
     async def _load_asset(self, filename: str) -> str:
@@ -321,7 +390,15 @@ class ViewerService:
                 return f.read()
                 
         except Exception as e:
-            logger.error(f"Failed to load asset {filename}: {str(e)}")
+            logger.emit(
+                "Failed to load asset",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "filename": filename,
+                    "path": str(self.asset_dir / filename)
+                }
+            )
             raise
 
     def _format_timestamp(self, seconds: float) -> str:

@@ -8,9 +8,11 @@ import time
 import psutil
 import uuid
 import os
-import logging
 from typing import Dict, List
 from prometheus_client import make_asgi_app, Gauge
+from opentelemetry import trace, metrics, logs
+from opentelemetry.trace import Status, StatusCode
+from opentelemetry.logs import LogRecord, LogRecordProcessor, Severity
 from .routes import files, jobs, transcriber, auth, keys
 from .services.provider import ServiceProvider
 from .services.interfaces import (
@@ -23,7 +25,6 @@ from .middleware.auth import AuthMiddleware
 from .middleware.error_handler import error_handler_middleware
 from .middleware.metrics import MetricsMiddleware
 from .middleware.security import SecurityHeadersMiddleware, SecurityConfig
-from .utils.logging import setup_logging, LogContext, get_logger
 from .utils.exceptions import AuthenticationError, ServiceUnavailableError
 from .utils.metrics import (
     DB_CONNECTIONS,
@@ -34,7 +35,6 @@ from .utils.metrics import (
 
 import uuid
 import os
-import logging
 from typing import Dict, List
 
 # System metrics
@@ -48,13 +48,8 @@ SYSTEM_DISK_USAGE = Gauge(
     ['type']  # used/total
 )
 
-# Setup logging - using OTEL for centralized logging
-setup_logging(
-    level="WARNING",  # Reduce verbosity
-    json_format=True
-)
-
-logger = logging.getLogger(__name__)
+# Get OpenTelemetry logger
+logger = logs.get_logger(__name__)
 
 # Global auth handler
 auth_handler = None
@@ -72,23 +67,40 @@ service_provider = ServiceProvider()
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the FastAPI application"""
     try:
-        logger.warning("Starting service initialization...")
+        logger.emit(
+            "Starting service initialization...",
+            severity=Severity.WARN
+        )
 
         # Initialize auth handler
         try:
             global auth_handler
             auth_handler = AuthMiddleware()
-            logger.warning("Auth handler initialized")
+            logger.emit(
+                "Auth handler initialized",
+                severity=Severity.WARN
+            )
         except Exception as auth_error:
-            logger.error(f"Auth handler initialization failed: {str(auth_error)}")
+            logger.emit(
+                "Auth handler initialization failed",
+                severity=Severity.ERROR,
+                attributes={"error": str(auth_error)}
+            )
             raise
 
         # Initialize all services
         try:
             await service_provider.initialize()
-            logger.warning("Service provider initialized")
+            logger.emit(
+                "Service provider initialized",
+                severity=Severity.WARN
+            )
         except Exception as e:
-            logger.error(f"Service provider initialization failed: {str(e)}")
+            logger.emit(
+                "Service provider initialization failed",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
         # Initialize metrics
@@ -105,7 +117,11 @@ async def lifespan(app: FastAPI):
                 bucket_size = await storage.get_bucket_size(bucket)
                 update_gauge(STORAGE_BYTES, bucket_size, {"bucket": bucket})
         except Exception as metrics_error:
-            logger.error(f"Metrics initialization failed: {str(metrics_error)}")
+            logger.emit(
+                "Metrics initialization failed",
+                severity=Severity.ERROR,
+                attributes={"error": str(metrics_error)}
+            )
             raise
 
         # Start background tasks
@@ -113,7 +129,11 @@ async def lifespan(app: FastAPI):
             metrics_update_task = asyncio.create_task(update_metrics_periodically())
             system_metrics_task = asyncio.create_task(update_system_metrics_periodically())
         except Exception as task_error:
-            logger.error(f"Failed to create background tasks: {str(task_error)}")
+            logger.emit(
+                "Failed to create background tasks",
+                severity=Severity.ERROR,
+                attributes={"error": str(task_error)}
+            )
             raise
 
         yield
@@ -127,14 +147,25 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         except Exception as cancel_error:
-            logger.error(f"Error cancelling background tasks: {str(cancel_error)}")
+            logger.emit(
+                "Error cancelling background tasks",
+                severity=Severity.ERROR,
+                attributes={"error": str(cancel_error)}
+            )
 
         # Clean up services
         await service_provider.cleanup()
-        logger.warning("Backend services stopped")
+        logger.emit(
+            "Backend services stopped",
+            severity=Severity.WARN
+        )
 
     except Exception as e:
-        logger.error(f"Startup/shutdown error: {str(e)}")
+        logger.emit(
+            "Startup/shutdown error",
+            severity=Severity.ERROR,
+            attributes={"error": str(e)}
+        )
         raise
 
 async def update_metrics_periodically():
@@ -159,7 +190,11 @@ async def update_metrics_periodically():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Error updating metrics: {str(e)}")
+            logger.emit(
+                "Error updating metrics",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             await asyncio.sleep(10)  # Back off on error
 
 async def update_system_metrics_periodically():
@@ -185,7 +220,11 @@ async def update_system_metrics_periodically():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Error updating system metrics: {str(e)}")
+            logger.emit(
+                "Error updating system metrics",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             await asyncio.sleep(5)  # Back off on error
 
 async def check_service_health() -> Dict[str, Dict]:
@@ -375,27 +414,45 @@ async def logging_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())
     start_time = time.time()
 
-    with LogContext(
-        request_id=request_id,
-        method=request.method,
-        path=request.url.path,
-        client_host=request.client.host if request.client else None
-    ):
+    # Create span context for request
+    span = trace.get_current_span()
+    ctx = {
+        "request_id": request_id,
+        "method": request.method,
+        "path": request.url.path,
+        "client_host": request.client.host if request.client else None
+    }
+    span.set_attributes(ctx)
+    try:
         response = await call_next(request)
 
         duration = time.time() - start_time
 
         # Only log non-200 responses or slow requests
         if response.status_code != 200 or duration > 1.0:
-            logger.info(
+            logger.emit(
                 f"{request.method} {request.url.path}",
-                extra={
+                severity=Severity.INFO,
+                attributes={
+                    **ctx,
                     "status": response.status_code,
-                    "dur": f"{duration:.2f}s"
+                    "duration": duration
                 }
             )
 
         return response
+    except Exception as e:
+        duration = time.time() - start_time
+        logger.emit(
+            f"{request.method} {request.url.path}",
+            severity=Severity.ERROR,
+            attributes={
+                **ctx,
+                "error": str(e),
+                "duration": duration
+            }
+        )
+        raise
 
 # Configure CORS with security settings
 app.add_middleware(

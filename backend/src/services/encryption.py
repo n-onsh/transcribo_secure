@@ -1,6 +1,7 @@
 import os
-import logging
 from typing import Optional, Dict, List, BinaryIO
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from azure.keyvault.secrets import SecretClient
 from azure.identity import DefaultAzureCredential
 from cryptography.fernet import Fernet
@@ -9,13 +10,16 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 import json
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class EncryptionService:
     def __init__(self):
         """Initialize encryption service"""
         try:
-            print("DEBUG: Starting encryption service initialization...")
+            logger.emit(
+                "Starting encryption service initialization",
+                severity=Severity.DEBUG
+            )
             
             # Initialize variables
             self.encryption_key = os.getenv("ENCRYPTION_KEY")
@@ -24,25 +28,36 @@ class EncryptionService:
             
             # If local encryption key is provided, use it and skip Azure Key Vault
             if self.encryption_key:
-                print("DEBUG: Using local encryption key")
+                logger.emit(
+                    "Using local encryption key",
+                    severity=Severity.DEBUG
+                )
                 try:
                     self.fernet = Fernet(self.encryption_key.encode())
-                    logger.info("Encryption service initialized with local key")
+                    logger.emit(
+                        "Encryption service initialized with local key",
+                        severity=Severity.INFO
+                    )
                     return
                 except Exception as e:
-                    logger.error(f"Failed to initialize with local key: {str(e)}")
+                    logger.emit(
+                        "Failed to initialize with local key",
+                        severity=Severity.ERROR,
+                        attributes={"error": str(e)}
+                    )
                     raise ValueError("Invalid ENCRYPTION_KEY format. Must be base64-encoded 32 byte key.")
 
             # Only proceed with Azure Key Vault setup if no local key
-            print("DEBUG: No local key found, proceeding with Azure Key Vault")
-            self.key_vault_url = os.getenv("AZURE_KEYVAULT_URL")
-            self.key_name = os.getenv("ENCRYPTION_KEY_NAME", "data-encryption-key")
-            
-            print(f"DEBUG: Key vault URL: {self.key_vault_url}")
-            print(f"DEBUG: Key name: {self.key_name}")
-            print(f"DEBUG: Azure Tenant ID: {os.getenv('AZURE_TENANT_ID')}")
-            print(f"DEBUG: Azure Client ID: {os.getenv('AZURE_CLIENT_ID')}")
-            print(f"DEBUG: Azure Client Secret: {os.getenv('AZURE_CLIENT_SECRET')}")
+            logger.emit(
+                "No local key found, proceeding with Azure Key Vault",
+                severity=Severity.DEBUG,
+                attributes={
+                    "key_vault_url": self.key_vault_url,
+                    "key_name": self.key_name,
+                    "tenant_id": os.getenv('AZURE_TENANT_ID'),
+                    "client_id": os.getenv('AZURE_CLIENT_ID')
+                }
+            )
             
             # Validate all required environment variables upfront
             required_vars = {
@@ -61,17 +76,29 @@ class EncryptionService:
                 )
             
             # Initialize Azure credentials
-            print("DEBUG: Initializing Azure credentials...")
+            logger.emit(
+                "Initializing Azure credentials",
+                severity=Severity.DEBUG
+            )
             try:
                 from azure.identity._credentials.environment import EnvironmentCredential
                 try:
                     credential = EnvironmentCredential()
-                    print("DEBUG: EnvironmentCredential initialized successfully")
+                    logger.emit(
+                        "EnvironmentCredential initialized successfully",
+                        severity=Severity.DEBUG
+                    )
                 except Exception as e:
-                    print(f"DEBUG: EnvironmentCredential failed: {str(e)}")
-                    print("DEBUG: Falling back to DefaultAzureCredential...")
+                    logger.emit(
+                        "EnvironmentCredential failed, falling back to DefaultAzureCredential",
+                        severity=Severity.DEBUG,
+                        attributes={"error": str(e)}
+                    )
                     credential = DefaultAzureCredential()
-                    print("DEBUG: DefaultAzureCredential initialized successfully")
+                    logger.emit(
+                        "DefaultAzureCredential initialized successfully",
+                        severity=Severity.DEBUG
+                    )
             except Exception as e:
                 raise ValueError(
                     "Failed to initialize Azure credentials. This could be due to:\n"
@@ -82,13 +109,19 @@ class EncryptionService:
                 )
             
             # Initialize Key Vault client
-            print("DEBUG: Creating SecretClient...")
+            logger.emit(
+                "Creating SecretClient",
+                severity=Severity.DEBUG
+            )
             try:
                 self.key_vault = SecretClient(
                     vault_url=self.key_vault_url,
                     credential=credential
                 )
-                print("DEBUG: SecretClient created successfully")
+                logger.emit(
+                    "SecretClient created successfully",
+                    severity=Severity.DEBUG
+                )
             except Exception as e:
                 raise ValueError(
                     "Failed to create Key Vault client. This could be due to:\n"
@@ -104,11 +137,17 @@ class EncryptionService:
             self.fernet = None
             self._init_encryption()
             
-            logger.info("Encryption service initialized")
+            logger.emit(
+                "Encryption service initialized",
+                severity=Severity.INFO
+            )
             
         except Exception as e:
-            print(f"DEBUG: Error initializing encryption service: {str(e)}")
-            logger.error(f"Failed to initialize encryption service: {str(e)}")
+            logger.emit(
+                "Failed to initialize encryption service",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def _init_encryption(self):
@@ -127,7 +166,11 @@ class EncryptionService:
             self.fernet = Fernet(key.encode())
             
         except Exception as e:
-            logger.error(f"Failed to initialize encryption: {str(e)}")
+            logger.emit(
+                "Failed to initialize encryption",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def _generate_key(self) -> str:
@@ -144,7 +187,11 @@ class EncryptionService:
             return key.decode()
             
         except Exception as e:
-            logger.error(f"Failed to generate key: {str(e)}")
+            logger.emit(
+                "Failed to generate key",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def rotate_key(self):
@@ -159,10 +206,17 @@ class EncryptionService:
             # Update Fernet
             self.fernet = Fernet(new_key.encode())
             
-            logger.info("Encryption key rotated")
+            logger.emit(
+                "Encryption key rotated",
+                severity=Severity.INFO
+            )
             
         except Exception as e:
-            logger.error(f"Failed to rotate key: {str(e)}")
+            logger.emit(
+                "Failed to rotate key",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def encrypt_string(self, data: str) -> str:
@@ -170,7 +224,11 @@ class EncryptionService:
         try:
             return self.fernet.encrypt(data.encode()).decode()
         except Exception as e:
-            logger.error(f"Failed to encrypt string: {str(e)}")
+            logger.emit(
+                "Failed to encrypt string",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def decrypt_string(self, data: str) -> str:
@@ -178,7 +236,11 @@ class EncryptionService:
         try:
             return self.fernet.decrypt(data.encode()).decode()
         except Exception as e:
-            logger.error(f"Failed to decrypt string: {str(e)}")
+            logger.emit(
+                "Failed to decrypt string",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def encrypt_dict(self, data: Dict) -> str:
@@ -187,7 +249,11 @@ class EncryptionService:
             json_str = json.dumps(data)
             return self.encrypt_string(json_str)
         except Exception as e:
-            logger.error(f"Failed to encrypt dict: {str(e)}")
+            logger.emit(
+                "Failed to encrypt dict",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def decrypt_dict(self, data: str) -> Dict:
@@ -196,7 +262,11 @@ class EncryptionService:
             json_str = self.decrypt_string(data)
             return json.loads(json_str)
         except Exception as e:
-            logger.error(f"Failed to decrypt dict: {str(e)}")
+            logger.emit(
+                "Failed to decrypt dict",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def encrypt_bytes(self, data: bytes) -> bytes:
@@ -204,7 +274,11 @@ class EncryptionService:
         try:
             return self.fernet.encrypt(data)
         except Exception as e:
-            logger.error(f"Failed to encrypt bytes: {str(e)}")
+            logger.emit(
+                "Failed to encrypt bytes",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def decrypt_bytes(self, data: bytes) -> bytes:
@@ -212,7 +286,11 @@ class EncryptionService:
         try:
             return self.fernet.decrypt(data)
         except Exception as e:
-            logger.error(f"Failed to decrypt bytes: {str(e)}")
+            logger.emit(
+                "Failed to decrypt bytes",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def encrypt_file(self, input_path: str, output_path: str):
@@ -230,7 +308,11 @@ class EncryptionService:
                 f.write(encrypted)
                 
         except Exception as e:
-            logger.error(f"Failed to encrypt file: {str(e)}")
+            logger.emit(
+                "Failed to encrypt file",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def decrypt_file(self, input_path: str, output_path: str):
@@ -248,7 +330,11 @@ class EncryptionService:
                 f.write(decrypted)
                 
         except Exception as e:
-            logger.error(f"Failed to decrypt file: {str(e)}")
+            logger.emit(
+                "Failed to decrypt file",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def encrypt_stream(self, stream: BinaryIO) -> bytes:
@@ -256,7 +342,11 @@ class EncryptionService:
         try:
             return self.encrypt_bytes(stream.read())
         except Exception as e:
-            logger.error(f"Failed to encrypt stream: {str(e)}")
+            logger.emit(
+                "Failed to encrypt stream",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def decrypt_stream(self, stream: BinaryIO) -> bytes:
@@ -264,7 +354,11 @@ class EncryptionService:
         try:
             return self.decrypt_bytes(stream.read())
         except Exception as e:
-            logger.error(f"Failed to decrypt stream: {str(e)}")
+            logger.emit(
+                "Failed to decrypt stream",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def encrypt_metadata(self, metadata: Dict) -> Dict:
@@ -290,7 +384,11 @@ class EncryptionService:
             return encrypted
             
         except Exception as e:
-            logger.error(f"Failed to encrypt metadata: {str(e)}")
+            logger.emit(
+                "Failed to encrypt metadata",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def decrypt_metadata(self, metadata: Dict) -> Dict:
@@ -316,5 +414,9 @@ class EncryptionService:
             return decrypted
             
         except Exception as e:
-            logger.error(f"Failed to decrypt metadata: {str(e)}")
+            logger.emit(
+                "Failed to decrypt metadata",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise

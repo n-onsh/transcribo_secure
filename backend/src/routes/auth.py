@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 from typing import Dict, List
-import logging
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from ..middleware.auth import AuthMiddleware
 from pydantic import BaseModel
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 router = APIRouter(
     prefix="/auth",
@@ -43,7 +44,11 @@ async def validate_token(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Token validation failed: {str(e)}")
+        logger.emit(
+            "Token validation failed",
+            severity=Severity.ERROR,
+            attributes={"error": str(e)}
+        )
         raise HTTPException(
             status_code=500,
             detail="Token validation failed"
@@ -63,7 +68,11 @@ async def get_current_user(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get user info: {str(e)}")
+        logger.emit(
+            "Failed to get user info",
+            severity=Severity.ERROR,
+            attributes={"error": str(e)}
+        )
         raise HTTPException(
             status_code=500,
             detail="Failed to get user info"
@@ -83,7 +92,11 @@ async def get_user_roles(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get user roles: {str(e)}")
+        logger.emit(
+            "Failed to get user roles",
+            severity=Severity.ERROR,
+            attributes={"error": str(e)}
+        )
         raise HTTPException(
             status_code=500,
             detail="Failed to get user roles"
@@ -96,7 +109,14 @@ async def check_role(role: str, request: Request):
         has_role = auth.has_role(request, role)
         return {"has_role": has_role}
     except Exception as e:
-        logger.error(f"Role check failed: {str(e)}")
+        logger.emit(
+            "Role check failed",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "role": role
+            }
+        )
         raise HTTPException(
             status_code=500,
             detail="Role check failed"

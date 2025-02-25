@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from typing import List, Optional
 from datetime import datetime
-import logging
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from ..services.vocabulary import VocabularyService
 from ..models.vocabulary import (
     VocabularyList,
@@ -11,7 +12,7 @@ from ..models.vocabulary import (
     VocabularyStats
 )
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 router = APIRouter(
     prefix="/vocabulary",
@@ -51,7 +52,17 @@ async def get_words(
         return sort.apply(vocab)
         
     except Exception as e:
-        logger.error(f"Failed to get vocabulary words: {str(e)}")
+        logger.emit(
+            "Failed to get vocabulary words",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"],
+                "prefix": prefix,
+                "min_length": min_length,
+                "max_length": max_length
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to get vocabulary")
 
 @router.post("/words")
@@ -65,7 +76,15 @@ async def add_words(
         return await vocabulary.add_words(user["id"], words)
         
     except Exception as e:
-        logger.error(f"Failed to add vocabulary words: {str(e)}")
+        logger.emit(
+            "Failed to add vocabulary words",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"],
+                "word_count": len(words)
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to add words")
 
 @router.delete("/words")
@@ -79,7 +98,15 @@ async def remove_words(
         return await vocabulary.remove_words(user["id"], words)
         
     except Exception as e:
-        logger.error(f"Failed to remove vocabulary words: {str(e)}")
+        logger.emit(
+            "Failed to remove vocabulary words",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"],
+                "word_count": len(words)
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to remove words")
 
 @router.get("")
@@ -90,7 +117,14 @@ async def get_vocabulary(request: Request) -> VocabularyList:
         return await vocabulary.get_vocabulary(user["id"])
         
     except Exception as e:
-        logger.error(f"Failed to get vocabulary: {str(e)}")
+        logger.emit(
+            "Failed to get vocabulary",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"]
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to get vocabulary")
 
 @router.put("")
@@ -104,7 +138,16 @@ async def update_vocabulary(
         return await vocabulary.update_vocabulary(user["id"], update)
         
     except Exception as e:
-        logger.error(f"Failed to update vocabulary: {str(e)}")
+        logger.emit(
+            "Failed to update vocabulary",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"],
+                "add_count": len(update.add) if update.add else 0,
+                "remove_count": len(update.remove) if update.remove else 0
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to update vocabulary")
 
 @router.delete("")
@@ -115,7 +158,14 @@ async def clear_vocabulary(request: Request):
         await vocabulary.clear_vocabulary(user["id"])
         
     except Exception as e:
-        logger.error(f"Failed to clear vocabulary: {str(e)}")
+        logger.emit(
+            "Failed to clear vocabulary",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"]
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to clear vocabulary")
 
 @router.get("/stats")
@@ -127,7 +177,14 @@ async def get_stats(request: Request) -> VocabularyStats:
         return VocabularyStats.from_vocabulary(vocab)
         
     except Exception as e:
-        logger.error(f"Failed to get vocabulary stats: {str(e)}")
+        logger.emit(
+            "Failed to get vocabulary stats",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"]
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to get vocabulary stats")
 
 @router.post("/import")
@@ -146,7 +203,15 @@ async def import_vocabulary(
         return await vocabulary.update_vocabulary(user["id"], update)
         
     except Exception as e:
-        logger.error(f"Failed to import vocabulary: {str(e)}")
+        logger.emit(
+            "Failed to import vocabulary",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"],
+                "word_count": len(words)
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to import vocabulary")
 
 @router.get("/export")
@@ -165,7 +230,15 @@ async def export_vocabulary(
             return "\n".join(vocab.get_words())
             
     except Exception as e:
-        logger.error(f"Failed to export vocabulary: {str(e)}")
+        logger.emit(
+            "Failed to export vocabulary",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"],
+                "format": format
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to export vocabulary")
 
 @router.post("/merge")
@@ -190,5 +263,13 @@ async def merge_vocabularies(
         return vocab
         
     except Exception as e:
-        logger.error(f"Failed to merge vocabularies: {str(e)}")
+        logger.emit(
+            "Failed to merge vocabularies",
+            severity=Severity.ERROR,
+            attributes={
+                "error": str(e),
+                "user_id": user["id"],
+                "other_user_id": other_user_id
+            }
+        )
         raise HTTPException(status_code=500, detail="Failed to merge vocabularies")

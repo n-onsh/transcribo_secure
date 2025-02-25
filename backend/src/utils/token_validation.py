@@ -1,12 +1,13 @@
 import jwt
-import logging
 from typing import Dict, Optional
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 import os
 from jwt import PyJWTError
 import requests
 from fastapi import HTTPException
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class TokenValidator:
     def __init__(self):
@@ -27,7 +28,14 @@ class TokenValidator:
         
         # Initialize
         self._load_openid_config()
-        logger.info("Token validator initialized")
+        logger.emit(
+            "Token validator initialized",
+            severity=Severity.INFO,
+            attributes={
+                "tenant_id": self.tenant_id,
+                "config_url": self.config_url
+            }
+        )
 
     def _load_openid_config(self):
         """Load OpenID configuration"""
@@ -43,7 +51,14 @@ class TokenValidator:
             self._load_jwks()
             
         except Exception as e:
-            logger.error(f"Failed to load OpenID config: {str(e)}")
+            logger.emit(
+                "Failed to load OpenID config",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "config_url": self.config_url
+                }
+            )
             raise ValueError(
                 "Failed to load Azure AD configuration. Check:\n"
                 "1. Network connectivity\n"
@@ -58,7 +73,14 @@ class TokenValidator:
             response.raise_for_status()
             self.jwks = response.json()
         except Exception as e:
-            logger.error(f"Failed to load JWKS: {str(e)}")
+            logger.emit(
+                "Failed to load JWKS",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "jwks_uri": self.jwks_uri
+                }
+            )
             raise
 
     def _get_key(self, kid: str) -> Optional[Dict]:
@@ -98,13 +120,21 @@ class TokenValidator:
             return decoded
             
         except PyJWTError as e:
-            logger.error(f"Token validation failed: {str(e)}")
+            logger.emit(
+                "Token validation failed",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise HTTPException(
                 status_code=401,
                 detail="Invalid authentication token"
             )
         except Exception as e:
-            logger.error(f"Token validation error: {str(e)}")
+            logger.emit(
+                "Token validation error",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise HTTPException(
                 status_code=500,
                 detail="Token validation failed"
@@ -121,5 +151,12 @@ class TokenValidator:
                 "groups": token_data.get("groups", [])
             }
         except Exception as e:
-            logger.error(f"Failed to get user info: {str(e)}")
+            logger.emit(
+                "Failed to get user info",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "token_data": str(token_data)
+                }
+            )
             raise

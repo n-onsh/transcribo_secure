@@ -1,5 +1,6 @@
-import logging
 from typing import Optional, List
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from uuid import UUID
 from .database import DatabaseService
 from .database_file_keys import DatabaseFileKeyService
@@ -12,7 +13,7 @@ from ..models.file_key import (
     FileKeyShareUpdate
 )
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class FileKeyService:
     def __init__(self):
@@ -20,9 +21,16 @@ class FileKeyService:
         try:
             self.db = DatabaseService()
             self.db_service = DatabaseFileKeyService(self.db.pool)
-            logger.info("File key service initialized")
+            logger.emit(
+                "File key service initialized",
+                severity=Severity.INFO
+            )
         except Exception as e:
-            logger.error(f"Failed to initialize file key service: {str(e)}")
+            logger.emit(
+                "Failed to initialize file key service",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     async def create_file_key(self, file_key: FileKeyCreate) -> FileKey:
@@ -49,7 +57,14 @@ class FileKeyService:
             # Then delete the key itself
             return await self.db_service.delete_file_key(file_id)
         except Exception as e:
-            logger.error(f"Failed to delete file key: {str(e)}")
+            logger.emit(
+                "Failed to delete file key",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            )
             raise
 
     async def share_file_key(
@@ -107,7 +122,14 @@ class FileKeyService:
                 )
                 return [FileKey(**dict(row)) for row in rows]
         except Exception as e:
-            logger.error(f"Failed to get shared files: {str(e)}")
+            logger.emit(
+                "Failed to get shared files",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": str(user_id)
+                }
+            )
             raise
 
     async def get_file_access(self, file_id: UUID) -> dict:
@@ -129,5 +151,12 @@ class FileKeyService:
                     "shared_with": shared_with
                 }
         except Exception as e:
-            logger.error(f"Failed to get file access info: {str(e)}")
+            logger.emit(
+                "Failed to get file access info",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            )
             raise

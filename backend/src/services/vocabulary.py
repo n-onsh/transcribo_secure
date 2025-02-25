@@ -1,12 +1,13 @@
 import os
-import logging
 from typing import List, Optional, Dict, Set
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 import json
 from pathlib import Path
 from datetime import datetime
 from ..models.vocabulary import VocabularyList, VocabularyEntry, VocabularyUpdate
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class VocabularyService:
     def __init__(self):
@@ -22,7 +23,15 @@ class VocabularyService:
         # Cache for vocabulary lists
         self._cache: Dict[str, VocabularyList] = {}
         
-        logger.info("Vocabulary service initialized")
+        logger.emit(
+            "Vocabulary service initialized",
+            severity=Severity.INFO,
+            attributes={
+                "vocab_dir": str(self.vocab_dir),
+                "max_words": self.max_words,
+                "min_word_length": self.min_word_length
+            }
+        )
 
     async def get_vocabulary(self, user_id: str) -> VocabularyList:
         """Get user's vocabulary list"""
@@ -51,7 +60,14 @@ class VocabularyService:
             return vocab
             
         except Exception as e:
-            logger.error(f"Failed to get vocabulary: {str(e)}")
+            logger.emit(
+                "Failed to get vocabulary",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id
+                }
+            )
             raise
 
     async def update_vocabulary(
@@ -107,7 +123,16 @@ class VocabularyService:
             return vocab
             
         except Exception as e:
-            logger.error(f"Failed to update vocabulary: {str(e)}")
+            logger.emit(
+                "Failed to update vocabulary",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "add_count": len(update.add) if update.add else 0,
+                    "remove_count": len(update.remove) if update.remove else 0
+                }
+            )
             raise
 
     async def clear_vocabulary(self, user_id: str):
@@ -125,7 +150,14 @@ class VocabularyService:
             await self._save_vocabulary(vocab)
             
         except Exception as e:
-            logger.error(f"Failed to clear vocabulary: {str(e)}")
+            logger.emit(
+                "Failed to clear vocabulary",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id
+                }
+            )
             raise
 
     async def delete_vocabulary(self, user_id: str):
@@ -140,7 +172,14 @@ class VocabularyService:
                 vocab_file.unlink()
                 
         except Exception as e:
-            logger.error(f"Failed to delete vocabulary: {str(e)}")
+            logger.emit(
+                "Failed to delete vocabulary",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id
+                }
+            )
             raise
 
     async def get_words(self, user_id: str) -> List[str]:
@@ -150,7 +189,14 @@ class VocabularyService:
             return [e.word for e in vocab.words]
             
         except Exception as e:
-            logger.error(f"Failed to get vocabulary words: {str(e)}")
+            logger.emit(
+                "Failed to get vocabulary words",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id
+                }
+            )
             raise
 
     async def add_words(self, user_id: str, words: List[str]) -> VocabularyList:
@@ -160,7 +206,15 @@ class VocabularyService:
             return await self.update_vocabulary(user_id, update)
             
         except Exception as e:
-            logger.error(f"Failed to add vocabulary words: {str(e)}")
+            logger.emit(
+                "Failed to add vocabulary words",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "word_count": len(words)
+                }
+            )
             raise
 
     async def remove_words(self, user_id: str, words: List[str]) -> VocabularyList:
@@ -170,7 +224,15 @@ class VocabularyService:
             return await self.update_vocabulary(user_id, update)
             
         except Exception as e:
-            logger.error(f"Failed to remove vocabulary words: {str(e)}")
+            logger.emit(
+                "Failed to remove vocabulary words",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "word_count": len(words)
+                }
+            )
             raise
 
     async def _save_vocabulary(self, vocab: VocabularyList):
@@ -185,7 +247,15 @@ class VocabularyService:
                 json.dump(vocab.dict(), f, indent=2, default=str)
                 
         except Exception as e:
-            logger.error(f"Failed to save vocabulary: {str(e)}")
+            logger.emit(
+                "Failed to save vocabulary",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": vocab.user_id,
+                    "word_count": len(vocab.words)
+                }
+            )
             raise
 
     def _clean_word(self, word: str) -> str:
@@ -213,8 +283,22 @@ class VocabularyService:
                         self._cache.pop(user_id, None)
                         
                 except Exception as e:
-                    logger.warning(f"Failed to process vocabulary file {vocab_file}: {str(e)}")
+                    logger.emit(
+                        "Failed to process vocabulary file",
+                        severity=Severity.WARN,
+                        attributes={
+                            "error": str(e),
+                            "file": str(vocab_file)
+                        }
+                    )
                     
         except Exception as e:
-            logger.error(f"Failed to cleanup old vocabularies: {str(e)}")
+            logger.emit(
+                "Failed to cleanup old vocabularies",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "days": days
+                }
+            )
             raise

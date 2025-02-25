@@ -1,5 +1,6 @@
-import logging
 from typing import Dict, Optional, Type, TypeVar
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from .interfaces import (
     StorageInterface,
     JobManagerInterface,
@@ -14,7 +15,7 @@ from .key_management import KeyManagementService
 from .encryption import EncryptionService
 from ..utils.metrics import track_time, DB_OPERATION_DURATION
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 T = TypeVar('T')
 
@@ -25,7 +26,10 @@ class ServiceProvider:
         """Initialize service provider"""
         self._services: Dict[Type, object] = {}
         self._initialized = False
-        logger.info("Service provider initialized")
+        logger.emit(
+            "Service provider initialized",
+            severity=Severity.INFO
+        )
 
     @track_time(DB_OPERATION_DURATION, {"operation": "initialize_services"})
     async def initialize(self):
@@ -54,27 +58,61 @@ class ServiceProvider:
             self._services[JobManagerInterface] = job_manager
 
             self._initialized = True
-            logger.info("All services initialized")
+            logger.emit(
+                "All services initialized",
+                severity=Severity.INFO,
+                attributes={
+                    "services": list(self._services.keys())
+                }
+            )
 
         except Exception as e:
-            logger.error(f"Failed to initialize services: {str(e)}")
+            logger.emit(
+                "Failed to initialize services",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             await self.cleanup()
             raise
 
     async def cleanup(self):
         """Clean up all services"""
         try:
-            # Get services that need cleanup
-            db = self.get(DatabaseInterface)
-            if db:
-                await db.close()
+            # Clean up services in reverse initialization order
+            for service_type in [
+                JobManagerInterface,
+                StorageInterface,
+                EncryptionInterface,
+                KeyManagementInterface,
+                DatabaseInterface
+            ]:
+                service = self._services.get(service_type)
+                if service:
+                    try:
+                        if hasattr(service, 'close'):
+                            await service.close()
+                        elif hasattr(service, 'cleanup'):
+                            await service.cleanup()
+                    except Exception as e:
+                        logger.emit(
+                            f"Error cleaning up {service_type.__name__}",
+                            severity=Severity.ERROR,
+                            attributes={"error": str(e)}
+                        )
 
             self._services.clear()
             self._initialized = False
-            logger.info("Services cleaned up")
+            logger.emit(
+                "Services cleaned up",
+                severity=Severity.INFO
+            )
 
         except Exception as e:
-            logger.error(f"Error cleaning up services: {str(e)}")
+            logger.emit(
+                "Error in cleanup process",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     def get(self, service_type: Type[T]) -> Optional[T]:
@@ -90,7 +128,11 @@ class ServiceProvider:
             await db.initialize_database()
             return db
         except Exception as e:
-            logger.error(f"Failed to initialize database: {str(e)}")
+            logger.emit(
+                "Failed to initialize database",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     async def _init_key_management(self) -> KeyManagementInterface:
@@ -100,7 +142,11 @@ class ServiceProvider:
             # No async initialization needed
             return key_mgmt
         except Exception as e:
-            logger.error(f"Failed to initialize key management: {str(e)}")
+            logger.emit(
+                "Failed to initialize key management",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     async def _init_encryption(
@@ -113,7 +159,11 @@ class ServiceProvider:
             # No async initialization needed
             return encryption
         except Exception as e:
-            logger.error(f"Failed to initialize encryption: {str(e)}")
+            logger.emit(
+                "Failed to initialize encryption",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     async def _init_storage(
@@ -130,7 +180,11 @@ class ServiceProvider:
             await storage._init_buckets()
             return storage
         except Exception as e:
-            logger.error(f"Failed to initialize storage: {str(e)}")
+            logger.emit(
+                "Failed to initialize storage",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     async def _init_job_manager(
@@ -147,5 +201,9 @@ class ServiceProvider:
             await job_manager.start()
             return job_manager
         except Exception as e:
-            logger.error(f"Failed to initialize job manager: {str(e)}")
+            logger.emit(
+                "Failed to initialize job manager",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise

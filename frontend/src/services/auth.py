@@ -8,13 +8,13 @@ import httpx
 logger = logging.getLogger(__name__)
 
 class AuthService:
-    def __init__(self):
+    def __init__(self, client_id: str, tenant_id: str, redirect_uri: str):
         """Initialize MSAL authentication"""
-        self.client_id = os.getenv("AZURE_CLIENT_ID")
-        self.tenant_id = os.getenv("AZURE_TENANT_ID")
-        self.redirect_uri = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        self.client_id = client_id
+        self.tenant_id = tenant_id
+        self.redirect_uri = redirect_uri
         
-        if not all([self.client_id, self.tenant_id]):
+        if not all([self.client_id, self.tenant_id, self.redirect_uri]):
             raise ValueError("Missing required Azure AD configuration")
         
         # Initialize MSAL client
@@ -123,6 +123,26 @@ class AuthService:
                 return response.json()
         except Exception as e:
             logger.error(f"Failed to get user info: {str(e)}")
+            raise
+
+    async def cleanup(self):
+        """Clean up resources"""
+        try:
+            # Clear stored token
+            if self.token_key in app.storage.user:
+                del app.storage.user[self.token_key]
+            
+            # Clear MSAL cache
+            for account in self.msal_app.get_accounts():
+                self.msal_app.remove_account(account)
+            
+            # Clear MSAL app
+            self.msal_app = None
+            
+            logger.info("Auth service cleaned up")
+            
+        except Exception as e:
+            logger.error(f"Auth cleanup failed: {str(e)}")
             raise
 
     def logout(self):

@@ -1,5 +1,6 @@
-import logging
 from typing import Optional, List
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from uuid import UUID
 import asyncpg
 from ..models.file_key import (
@@ -11,7 +12,7 @@ from ..models.file_key import (
     FileKeyShareUpdate
 )
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class DatabaseFileKeyService:
     def __init__(self, pool: asyncpg.Pool):
@@ -33,7 +34,14 @@ class DatabaseFileKeyService:
                 )
                 return FileKey(**dict(row))
         except Exception as e:
-            logger.error(f"Failed to create file key: {str(e)}")
+            logger.emit(
+                "Failed to create file key",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_key.file_id)
+                }
+            )
             raise
 
     async def get_file_key(self, file_id: UUID) -> Optional[FileKey]:
@@ -49,7 +57,14 @@ class DatabaseFileKeyService:
                 )
                 return FileKey(**dict(row)) if row else None
         except Exception as e:
-            logger.error(f"Failed to get file key: {str(e)}")
+            logger.emit(
+                "Failed to get file key",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            )
             raise
 
     async def update_file_key(
@@ -72,7 +87,14 @@ class DatabaseFileKeyService:
                 )
                 return FileKey(**dict(row)) if row else None
         except Exception as e:
-            logger.error(f"Failed to update file key: {str(e)}")
+            logger.emit(
+                "Failed to update file key",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            )
             raise
 
     async def delete_file_key(self, file_id: UUID) -> bool:
@@ -88,7 +110,14 @@ class DatabaseFileKeyService:
                 )
                 return result == "DELETE 1"
         except Exception as e:
-            logger.error(f"Failed to delete file key: {str(e)}")
+            logger.emit(
+                "Failed to delete file key",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            )
             raise
 
     async def create_file_key_share(
@@ -110,7 +139,15 @@ class DatabaseFileKeyService:
                 )
                 return FileKeyShare(**dict(row))
         except Exception as e:
-            logger.error(f"Failed to create file key share: {str(e)}")
+            logger.emit(
+                "Failed to create file key share",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(share.file_id),
+                    "user_id": str(share.user_id)
+                }
+            )
             raise
 
     async def get_file_key_share(
@@ -131,7 +168,15 @@ class DatabaseFileKeyService:
                 )
                 return FileKeyShare(**dict(row)) if row else None
         except Exception as e:
-            logger.error(f"Failed to get file key share: {str(e)}")
+            logger.emit(
+                "Failed to get file key share",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id),
+                    "user_id": str(user_id)
+                }
+            )
             raise
 
     async def list_file_key_shares(
@@ -151,7 +196,14 @@ class DatabaseFileKeyService:
                 )
                 return [FileKeyShare(**dict(row)) for row in rows]
         except Exception as e:
-            logger.error(f"Failed to list file key shares: {str(e)}")
+            logger.emit(
+                "Failed to list file key shares",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            )
             raise
 
     async def update_file_key_share(
@@ -176,7 +228,15 @@ class DatabaseFileKeyService:
                 )
                 return FileKeyShare(**dict(row)) if row else None
         except Exception as e:
-            logger.error(f"Failed to update file key share: {str(e)}")
+            logger.emit(
+                "Failed to update file key share",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id),
+                    "user_id": str(user_id)
+                }
+            )
             raise
 
     async def delete_file_key_share(
@@ -197,7 +257,15 @@ class DatabaseFileKeyService:
                 )
                 return result == "DELETE 1"
         except Exception as e:
-            logger.error(f"Failed to delete file key share: {str(e)}")
+            logger.emit(
+                "Failed to delete file key share",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id),
+                    "user_id": str(user_id)
+                }
+            )
             raise
 
     async def delete_all_file_key_shares(self, file_id: UUID) -> int:
@@ -213,5 +281,12 @@ class DatabaseFileKeyService:
                 )
                 return int(result.split()[1])
         except Exception as e:
-            logger.error(f"Failed to delete file key shares: {str(e)}")
+            logger.emit(
+                "Failed to delete file key shares",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            )
             raise

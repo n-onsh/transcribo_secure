@@ -14,13 +14,11 @@ logger = logging.getLogger(__name__)
 # Initialize OpenTelemetry first
 setup_telemetry(app)
 
-# Now import metrics after OpenTelemetry is initialized
-from .utils.metrics import (
-    http_requests_total,
-    http_request_duration,
-    file_upload_total,
-    job_status_total
-)
+# Now import and setup metrics after OpenTelemetry is initialized
+from .utils.metrics import setup_metrics, http_requests_total, http_request_duration, file_upload_total, job_status_total
+
+# Initialize metrics
+setup_metrics()
 
 # Global service provider
 service_provider = FrontendServiceProvider()

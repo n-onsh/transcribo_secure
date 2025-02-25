@@ -11,3 +11,4 @@ coverage==7.3.2
 httpx==0.25.1
 python-magic==0.4.27
 python-multipart==0.0.6
+aiohttp==3.9.1  # Required for Loki integration tests

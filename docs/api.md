@@ -47,14 +47,15 @@ graph TD
 ### Files API
 
 #### POST /api/v1/files/upload
-Upload a file for transcription.
+Upload a file for transcription using streaming upload.
 
 Request:
 ```http
 POST /api/v1/files/upload HTTP/1.1
 Content-Type: multipart/form-data
+Transfer-Encoding: chunked
 
-file: <file_data>
+file: <streaming_file_data>
 ```
 
 Response:
@@ -63,9 +64,26 @@ Response:
   "id": "123e4567-e89b-12d3-a456-426614174000",
   "name": "recording.mp3",
   "status": "pending",
-  "created_at": "2025-02-24T07:00:00Z"
+  "created_at": "2025-02-24T07:00:00Z",
+  "upload_progress": 0.0
 }
 ```
+
+Progress Updates (Server-Sent Events):
+```http
+event: upload_progress
+data: {
+  "file_id": "123e4567-e89b-12d3-a456-426614174000",
+  "progress": 0.45,
+  "bytes_processed": 1048576
+}
+```
+
+Features:
+- Chunk-by-chunk processing
+- Real-time progress tracking
+- Memory-efficient handling
+- Automatic cleanup on failure
 
 #### GET /api/v1/files/{file_id}
 Get file information.
@@ -252,14 +270,45 @@ Rate limiting has been removed in favor of worker-based concurrency control:
 - Failed jobs use exponential backoff
 - Stale jobs are automatically recovered
 
-## Metrics
+## Observability
 
-Available Prometheus metrics:
-- job_processing_duration_seconds
-- job_queue_size
-- job_retry_count
-- storage_bytes
-- db_connections
+### OpenTelemetry Integration
+
+1. Logging:
+```json
+{
+  "timestamp": "2025-02-24T07:00:00Z",
+  "severity": "INFO",
+  "service": "backend",
+  "trace_id": "1234...",
+  "span_id": "5678...",
+  "attributes": {
+    "operation": "upload_file",
+    "user_id": "user123",
+    "file_name": "recording.mp3",
+    "file_size": 1048576
+  },
+  "message": "Started file upload"
+}
+```
+
+2. Metrics:
+- Prometheus format with OpenTelemetry attributes
+- Custom business metrics:
+  * job_processing_duration_seconds
+  * job_queue_size
+  * job_retry_count
+  * storage_bytes
+  * db_connections
+  * upload_duration_seconds
+  * upload_bytes_total
+  * upload_errors_total
+
+3. Tracing:
+- Distributed tracing across services
+- Automatic context propagation
+- Span attributes for debugging
+- Parent-child relationship tracking
 
 ## Configuration
 

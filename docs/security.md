@@ -113,9 +113,10 @@ graph TD
 ### Encryption Process
 ```mermaid
 graph TD
-    F[File] --> C[Compress]
+    F[File] --> S[Stream]
+    S --> C[Compress]
     C --> E[Encrypt]
-    E --> S[Store]
+    E --> ST[Store]
     
     subgraph Keys
         FK[File Key] --> EK[Encrypt Key]
@@ -125,17 +126,30 @@ graph TD
 ```
 
 1. File Processing
-   - Validate file type and size
-   - Compress before encryption
-   - Generate unique file key
-   - Encrypt with file key
-   - Store encrypted data
+   - Secure streaming upload:
+     * Chunk-by-chunk processing
+     * Memory-efficient handling
+     * Progress tracking
+     * Automatic cleanup
+   - File validation:
+     * Type checking
+     * Size limits
+     * Content validation
+   - Secure processing:
+     * Compression before encryption
+     * Unique file key generation
+     * End-to-end encryption
+     * Secure storage
 
 2. Key Management
    - Generate random file keys
    - Encrypt file keys with user keys
    - Store encrypted keys in database
    - Secure key sharing
+   - Azure KeyVault integration (optional):
+     * Development fallback to environment variables
+     * Automatic migration path to production
+     * Secure credential handling
 
 3. Access Control
    - Owner-based access
@@ -197,6 +211,11 @@ graph TD
 - Secure key management
 - Access control
 - Secure deletion
+- Streaming data protection:
+  * Chunk validation
+  * Progress verification
+  * Memory limits
+  * Cleanup on failure
 
 ### Job Data
 - Job isolation
@@ -206,23 +225,59 @@ graph TD
 
 ## Monitoring & Auditing
 
-### Security Metrics
-- Authentication failures
-- Access attempts
-- Job failures
-- Storage usage
+### OpenTelemetry Integration
+```mermaid
+graph TD
+    L[Logs] --> OT[OpenTelemetry]
+    M[Metrics] --> OT
+    T[Traces] --> OT
+    
+    OT --> C[Collector]
+    C --> LK[Loki]
+    C --> PR[Prometheus]
+    C --> TP[Tempo]
+    
+    subgraph Correlation
+        TR[Trace ID]
+        SP[Span ID]
+        AT[Attributes]
+    end
+```
+
+1. Structured Logging
+   - Severity levels
+   - Rich context attributes
+   - Error details
+   - Request correlation
+
+2. Security Metrics
+   - Authentication failures
+   - Access attempts
+   - Job failures
+   - Storage usage
+   - Upload metrics:
+     * Duration
+     * Bytes processed
+     * Error rates
+     * Memory usage
+
+3. Distributed Tracing
+   - Request tracking
+   - Error correlation
+   - Performance monitoring
+   - Security event tracking
 
 ### Audit Logging
-- Access logs
-- Operation logs
-- Error logs
-- Security events
+- Access logs with context
+- Operation logs with tracing
+- Error logs with correlation
+- Security events with attributes
 
 ### Health Monitoring
-- Service health
-- Worker health
-- Storage health
-- Database health
+- Service health with metrics
+- Worker health tracking
+- Storage monitoring
+- Database health checks
 
 ## Configuration Security
 
@@ -232,6 +287,12 @@ graph TD
 POSTGRES_PASSWORD=<secure_password>
 MINIO_ACCESS_KEY=<access_key>
 MINIO_SECRET_KEY=<secret_key>
+
+# Azure KeyVault (optional)
+AZURE_KEYVAULT_URL=<url>
+AZURE_TENANT_ID=<id>
+AZURE_CLIENT_ID=<id>
+AZURE_CLIENT_SECRET=<secret>
 
 # Optional with secure defaults
 POSTGRES_HOST=localhost
@@ -253,12 +314,21 @@ MINIO_PORT=9000
 - Type safety
 - Error handling
 - Input validation
+- Memory management:
+  * Streaming processing
+  * Resource limits
+  * Cleanup procedures
 
 ### Testing
 - Security tests
 - Concurrency tests
 - Error tests
 - Recovery tests
+- Streaming tests:
+  * Upload validation
+  * Progress tracking
+  * Memory efficiency
+  * Error handling
 
 ### Deployment
 - Secure builds
@@ -269,19 +339,24 @@ MINIO_PORT=9000
 ## Incident Response
 
 ### Detection
-- Error monitoring
-- Security alerts
-- Health checks
-- Audit logs
+- Error monitoring with context
+- Security alerts with correlation
+- Health checks with metrics
+- Audit logs with tracing
 
 ### Recovery
 - Automatic recovery
 - Job retry
 - Worker failover
 - Data protection
+- Upload recovery:
+  * Chunk validation
+  * Progress resumption
+  * State recovery
+  * Cleanup procedures
 
 ### Reporting
-- Error logging
-- Security events
-- Audit trails
-- Metrics tracking
+- Structured error logging
+- Security event correlation
+- Audit trail tracking
+- Metrics aggregation

@@ -1,11 +1,14 @@
 import asyncio
-import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, BinaryIO
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from datetime import datetime, timedelta
 import os
 import json
 import uuid
 import httpx
+import tempfile
+import time
 from .database import DatabaseService
 from .storage import StorageService
 from ..models.job import Job, JobStatus, JobPriority, JobFilter, JobUpdate, Transcription
@@ -25,7 +28,7 @@ from ..utils.metrics import (
     increment_counter
 )
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class JobManager:
     def __init__(self, storage: Optional[StorageService] = None, db: Optional[DatabaseService] = None):
@@ -51,7 +54,11 @@ class JobManager:
         # Active jobs
         self.active_jobs: Dict[str, Job] = {}
         
-        logger.info(f"Job manager initialized with worker ID {self.worker_id}")
+        logger.emit(
+            "Job manager initialized",
+            severity=Severity.INFO,
+            attributes={"worker_id": self.worker_id}
+        )
 
     async def start(self):
         """Start background tasks"""
@@ -71,10 +78,18 @@ class JobManager:
             self.cleanup_task = asyncio.create_task(self._cleanup_old_jobs())
             self.health_check_task = asyncio.create_task(self._health_check())
             
-            logger.info(f"Job manager started with {self.max_concurrent_jobs} workers")
+            logger.emit(
+                "Job manager started",
+                severity=Severity.INFO,
+                attributes={"worker_count": self.max_concurrent_jobs}
+            )
             
         except Exception as e:
-            logger.error(f"Failed to start job manager: {str(e)}")
+            logger.emit(
+                "Failed to start job manager",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     async def stop(self):
@@ -102,38 +117,57 @@ class JobManager:
             # Close services
             await self.db.close()
             
-            logger.info("Job manager stopped")
+            logger.emit(
+                "Job manager stopped",
+                severity=Severity.INFO
+            )
             
         except Exception as e:
-            logger.error(f"Failed to stop job manager: {str(e)}")
+            logger.emit(
+                "Failed to stop job manager",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     @track_time(JOB_PROCESSING_DURATION, {"operation": "create"})
     async def create_job(
         self,
         user_id: str,
-        file_data: bytes,
+        file_data: BinaryIO,
         file_name: str,
         priority: JobPriority = JobPriority.NORMAL,
         max_retries: Optional[int] = None
     ) -> Job:
-        """Create a new transcription job"""
+        """Create a new transcription job with streaming upload"""
         try:
+            # Get file size without reading entire file
+            file_data.seek(0, 2)  # Seek to end
+            file_size = file_data.tell()
+            file_data.seek(0)  # Reset to start
+            
             # Create job record
             job = Job(
                 user_id=user_id,
                 file_name=file_name,
-                file_size=len(file_data),
+                file_size=file_size,
                 priority=priority,
                 max_retries=max_retries or self.max_retries
             )
             
-            # Store file
+            # Create progress callback
+            async def update_progress(progress: float):
+                job.update_progress(progress)
+                await self.db.update_job(job)
+            
+            # Store file with streaming and progress tracking
             await self.storage.store_file(
-                user_id,
-                file_data,
-                file_name,
-                "audio"
+                user_id=user_id,
+                data=file_data,
+                file_name=file_name,
+                bucket_type="audio",
+                file_id=str(job.id),
+                progress_callback=update_progress
             )
             
             # Save job
@@ -143,11 +177,24 @@ class JobManager:
             increment_counter(JOBS_TOTAL, {"status": job.status})
             update_gauge(JOB_QUEUE_SIZE, 1, {"priority": job.priority.name})
             
-            logger.info(f"Created job {job.id} for user {user_id}")
+            logger.emit(
+                "Created job",
+                severity=Severity.INFO,
+                attributes={
+                    "job_id": str(job.id),
+                    "user_id": user_id,
+                    "file_name": file_name,
+                    "file_size": file_size
+                }
+            )
             return job
             
         except Exception as e:
-            logger.error(f"Failed to create job: {str(e)}")
+            logger.emit(
+                "Failed to create job",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     @track_time(JOB_PROCESSING_DURATION, {"operation": "get"})
@@ -165,7 +212,14 @@ class JobManager:
             return job
             
         except Exception as e:
-            logger.error(f"Failed to get job: {str(e)}")
+            logger.emit(
+                "Failed to get job",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def list_jobs(
@@ -184,7 +238,11 @@ class JobManager:
                 offset=offset
             )
         except Exception as e:
-            logger.error(f"Failed to list jobs: {str(e)}")
+            logger.emit(
+                "Failed to list jobs",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     @track_time(JOB_PROCESSING_DURATION, {"operation": "update"})
@@ -216,7 +274,14 @@ class JobManager:
             return job
             
         except Exception as e:
-            logger.error(f"Failed to update job: {str(e)}")
+            logger.emit(
+                "Failed to update job",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def delete_job(self, job_id: str, user_id: Optional[str] = None):
@@ -234,10 +299,21 @@ class JobManager:
             # Delete from database
             await self.db.delete_job(job_id)
             
-            logger.info(f"Deleted job {job_id}")
+            logger.emit(
+                "Deleted job",
+                severity=Severity.INFO,
+                attributes={"job_id": job_id}
+            )
             
         except Exception as e:
-            logger.error(f"Failed to delete job: {str(e)}")
+            logger.emit(
+                "Failed to delete job",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def get_transcription(self, job_id: str, user_id: Optional[str] = None) -> Transcription:
@@ -258,7 +334,14 @@ class JobManager:
             return Transcription.parse_raw(transcription_data)
             
         except Exception as e:
-            logger.error(f"Failed to get transcription: {str(e)}")
+            logger.emit(
+                "Failed to get transcription",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def cancel_job(self, job_id: str, user_id: Optional[str] = None) -> Job:
@@ -280,11 +363,22 @@ class JobManager:
             job.cancel()
             await self.db.update_job(job)
             
-            logger.info(f"Cancelled job {job.id}")
+            logger.emit(
+                "Cancelled job",
+                severity=Severity.INFO,
+                attributes={"job_id": str(job.id)}
+            )
             return job
             
         except Exception as e:
-            logger.error(f"Failed to cancel job: {str(e)}")
+            logger.emit(
+                "Failed to cancel job",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def retry_job(self, job_id: str, user_id: Optional[str] = None) -> Job:
@@ -311,11 +405,22 @@ class JobManager:
             # Save changes
             await self.db.update_job(job)
             
-            logger.info(f"Retrying job {job.id}")
+            logger.emit(
+                "Retrying job",
+                severity=Severity.INFO,
+                attributes={"job_id": str(job.id)}
+            )
             return job
             
         except Exception as e:
-            logger.error(f"Failed to retry job: {str(e)}")
+            logger.emit(
+                "Failed to retry job",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "job_id": job_id
+                }
+            )
             raise
 
     async def _handle_job_update(self, data: Dict):
@@ -326,11 +431,23 @@ class JobManager:
             worker_id = data.get('worker_id')
             
             if job_id in self.active_jobs and worker_id != self.worker_id:
-                logger.warning(f"Job {job_id} taken by worker {worker_id}")
+                logger.emit(
+                    "Job taken by another worker",
+                    severity=Severity.WARN,
+                    attributes={
+                        "job_id": job_id,
+                        "worker_id": worker_id,
+                        "our_worker_id": self.worker_id
+                    }
+                )
                 self.active_jobs.pop(job_id, None)
                 
         except Exception as e:
-            logger.error(f"Error handling job update: {str(e)}")
+            logger.emit(
+                "Error handling job update",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
 
     @track_time(JOB_PROCESSING_DURATION, {"operation": "process"})
     async def _process_job(self, job: Job):
@@ -340,33 +457,49 @@ class JobManager:
             # Add to active jobs
             self.active_jobs[job.id] = job
             
-            # Get audio file
-            audio_data = await self.storage.retrieve_file(
-                job.user_id,
-                job.file_name,
-                "audio"
-            )
-            
-            # Submit job to transcriber service
-            async with httpx.AsyncClient() as client:
-                # Upload audio file to transcriber
-                response = await client.post(
-                    f"{self.transcriber_url}/transcribe",
-                    files={"audio": audio_data},
-                    params={"job_id": job.id}
-                )
-                response.raise_for_status()
+            # Create temp file for streaming
+            with tempfile.NamedTemporaryFile(delete=False) as temp:
+                temp_path = temp.name
                 
-                # Get transcription result
-                transcription = response.json()
-                
-                # Store transcription
-                await self.storage.store_file(
-                    job.user_id,
-                    json.dumps(transcription).encode(),
-                    f"{job.id}.json",
-                    "transcription"
-                )
+                try:
+                    # Get audio file with streaming
+                    audio_data = await self.storage.retrieve_file(
+                        job.user_id,
+                        job.file_name,
+                        "audio",
+                        file_id=str(job.id)
+                    )
+                    
+                    # Write to temp file
+                    with open(temp_path, 'wb') as f:
+                        f.write(audio_data)
+                    
+                    # Submit job to transcriber service
+                    async with httpx.AsyncClient() as client:
+                        # Upload audio file to transcriber with streaming
+                        with open(temp_path, 'rb') as f:
+                            response = await client.post(
+                                f"{self.transcriber_url}/transcribe",
+                                files={"audio": f},
+                                params={"job_id": job.id},
+                                timeout=None  # No timeout for large files
+                            )
+                            response.raise_for_status()
+                            
+                        # Get transcription result
+                        transcription = response.json()
+                        
+                        # Store transcription
+                        await self.storage.store_file(
+                            user_id=job.user_id,
+                            data=json.dumps(transcription).encode(),
+                            file_name=f"{job.id}.json",
+                            bucket_type="transcription"
+                        )
+                            
+                finally:
+                    # Clean up temp file
+                    os.unlink(temp_path)
             
             # Mark complete
             job.complete()
@@ -378,7 +511,14 @@ class JobManager:
                 time.time() - start_time
             )
             
-            logger.info(f"Completed job {job.id}")
+            logger.emit(
+                "Completed job",
+                severity=Severity.INFO,
+                attributes={
+                    "job_id": str(job.id),
+                    "duration": time.time() - start_time
+                }
+            )
             
         except asyncio.CancelledError:
             # Handle cancellation
@@ -393,7 +533,15 @@ class JobManager:
             raise
             
         except Exception as e:
-            logger.error(f"Failed to process job {job.id}: {str(e)}")
+            logger.emit(
+                "Failed to process job",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "job_id": str(job.id),
+                    "duration": time.time() - start_time
+                }
+            )
             job.fail(str(e))
             await self.db.update_job(job)
             
@@ -419,7 +567,14 @@ class JobManager:
                         # Process job
                         await self._process_job(job)
                     except Exception as e:
-                        logger.error(f"Error processing job {job.id}: {str(e)}")
+                        logger.emit(
+                            "Error processing job",
+                            severity=Severity.ERROR,
+                            attributes={
+                                "error": str(e),
+                                "job_id": str(job.id)
+                            }
+                        )
                 else:
                     # No jobs available, wait before trying again
                     await asyncio.sleep(5)
@@ -427,7 +582,14 @@ class JobManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in job worker: {str(e)}")
+                logger.emit(
+                    "Error in job worker",
+                    severity=Severity.ERROR,
+                    attributes={
+                        "error": str(e),
+                        "worker_id": self.worker_id
+                    }
+                )
                 await asyncio.sleep(1)
 
     async def _cleanup_old_jobs(self):
@@ -443,7 +605,11 @@ class JobManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in cleanup loop: {str(e)}")
+                logger.emit(
+                    "Error in cleanup loop",
+                    severity=Severity.ERROR,
+                    attributes={"error": str(e)}
+                )
                 await asyncio.sleep(60 * 60)
 
     async def _health_check(self):
@@ -459,7 +625,11 @@ class JobManager:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in health check: {str(e)}")
+                logger.emit(
+                    "Error in health check",
+                    severity=Severity.ERROR,
+                    attributes={"error": str(e)}
+                )
                 await asyncio.sleep(10)
 
     async def _update_progress(self, job_id: str, progress: float):
@@ -468,4 +638,12 @@ class JobManager:
             update = JobUpdate(progress=progress)
             await self.update_job(job_id, update)
         except Exception as e:
-            logger.error(f"Failed to update job progress: {str(e)}")
+            logger.emit(
+                "Failed to update job progress",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "job_id": job_id,
+                    "progress": progress
+                }
+            )

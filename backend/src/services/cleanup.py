@@ -2,13 +2,14 @@ from datetime import datetime, timedelta
 import asyncio
 from typing import Optional
 from uuid import UUID
-import logging
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 from .database import DatabaseService
 from .storage import StorageService
 from ..models.job import Job, JobStatus
 from ..config import get_settings
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class CleanupService:
     def __init__(self, db: DatabaseService, storage: StorageService):
@@ -26,7 +27,11 @@ class CleanupService:
         
         self.is_running = True
         self._task = asyncio.create_task(self._cleanup_loop())
-        logger.info("Cleanup service started")
+        logger.emit(
+            "Cleanup service started",
+            severity=Severity.INFO,
+            attributes={"retention_days": self.retention_days}
+        )
 
     async def stop(self):
         """Stop the cleanup service"""
@@ -37,7 +42,10 @@ class CleanupService:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("Cleanup service stopped")
+        logger.emit(
+            "Cleanup service stopped",
+            severity=Severity.INFO
+        )
 
     async def _cleanup_loop(self):
         """Main cleanup loop"""
@@ -48,7 +56,11 @@ class CleanupService:
                 # Wait for next cleanup cycle (check every hour)
                 await asyncio.sleep(3600)
             except Exception as e:
-                logger.error(f"Error in cleanup loop: {str(e)}")
+                logger.emit(
+                    "Error in cleanup loop",
+                    severity=Severity.ERROR,
+                    attributes={"error": str(e)}
+                )
                 await asyncio.sleep(300)  # Wait 5 minutes on error
 
     async def _perform_cleanup(self):
@@ -58,7 +70,14 @@ class CleanupService:
         try:
             # Get files older than retention period
             expired_files = await self._get_expired_files(cutoff_date)
-            logger.info(f"Found {len(expired_files)} files to clean up")
+            logger.emit(
+                "Found files to clean up",
+                severity=Severity.INFO,
+                attributes={
+                    "count": len(expired_files),
+                    "cutoff_date": cutoff_date.isoformat()
+                }
+            )
 
             for file_id, file_name, file_type in expired_files:
                 try:
@@ -72,16 +91,40 @@ class CleanupService:
                     # Delete from database
                     await self._delete_file_data(file_id)
                     
-                    logger.info(f"Cleaned up file {file_id}")
+                    logger.emit(
+                        "Cleaned up file",
+                        severity=Severity.INFO,
+                        attributes={
+                            "file_id": str(file_id),
+                            "file_name": file_name,
+                            "file_type": file_type
+                        }
+                    )
                     
                 except Exception as e:
-                    logger.error(f"Error cleaning up file {file_id}: {str(e)}")
+                    logger.emit(
+                        "Error cleaning up file",
+                        severity=Severity.ERROR,
+                        attributes={
+                            "error": str(e),
+                            "file_id": str(file_id),
+                            "file_name": file_name,
+                            "file_type": file_type
+                        }
+                    )
 
             # Cleanup old job records
             await self._cleanup_old_jobs(cutoff_date)
             
         except Exception as e:
-            logger.error(f"Error performing cleanup: {str(e)}")
+            logger.emit(
+                "Error performing cleanup",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "cutoff_date": cutoff_date.isoformat()
+                }
+            )
 
     async def _get_expired_files(self, cutoff_date: datetime) -> list:
         """Get list of expired files"""
@@ -116,4 +159,11 @@ class CleanupService:
                 AND status IN ('completed', 'failed')
             """, cutoff_date)
             deleted_count = result.split()[-1]  # Get count from "DELETE X" message
-            logger.info(f"Cleaned up {deleted_count} old job records")
+            logger.emit(
+                "Cleaned up old job records",
+                severity=Severity.INFO,
+                attributes={
+                    "count": int(deleted_count),
+                    "cutoff_date": cutoff_date.isoformat()
+                }
+            )

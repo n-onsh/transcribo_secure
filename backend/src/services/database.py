@@ -1,6 +1,7 @@
 import os
-import logging
 from typing import Optional, List, Dict
+from opentelemetry import trace, logs
+from opentelemetry.logs import Severity
 import asyncpg
 from datetime import datetime, timedelta
 import uuid
@@ -26,7 +27,7 @@ from ..utils.metrics import (
     update_gauge
 )
 
-logger = logging.getLogger(__name__)
+logger = logs.get_logger(__name__)
 
 class DatabaseService:
     def __init__(self):
@@ -50,7 +51,10 @@ class DatabaseService:
         # Job notification listeners
         self.job_listeners: Dict[str, asyncpg.Connection] = {}
 
-        logger.info("Database service initialized")
+        logger.emit(
+            "Database service initialized",
+            severity=Severity.INFO
+        )
 
     @track_time(DB_OPERATION_DURATION, {"operation": "initialize"})
     @track_errors(DB_OPERATION_ERRORS, {"operation": "initialize", "error_type": "unknown"})
@@ -74,10 +78,23 @@ class DatabaseService:
             # Update connection metrics
             update_gauge(DB_CONNECTIONS, len(self.pool._holders))
 
-            logger.info("Database initialized")
+            logger.emit(
+                "Database initialized",
+                severity=Severity.INFO,
+                attributes={
+                    "host": self.host,
+                    "port": self.port,
+                    "database": self.database,
+                    "pool_size": len(self.pool._holders)
+                }
+            )
 
         except Exception as e:
-            logger.error(f"Failed to initialize database: {str(e)}")
+            logger.emit(
+                "Failed to initialize database",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     async def subscribe_to_job_updates(self, worker_id: str, callback) -> None:
@@ -98,16 +115,31 @@ class DatabaseService:
                     data = json.loads(payload)
                     await callback(data)
                 except Exception as e:
-                    logger.error(f"Error handling job notification: {str(e)}")
+                    logger.emit(
+                        "Error handling job notification",
+                        severity=Severity.ERROR,
+                        attributes={"error": str(e)}
+                    )
 
             # Start listening
             await conn.add_listener('job_updates', handle_notification)
             self.job_listeners[worker_id] = conn
 
-            logger.info(f"Worker {worker_id} subscribed to job updates")
+            logger.emit(
+                "Worker subscribed to job updates",
+                severity=Severity.INFO,
+                attributes={"worker_id": worker_id}
+            )
 
         except Exception as e:
-            logger.error(f"Failed to subscribe to job updates: {str(e)}")
+            logger.emit(
+                "Failed to subscribe to job updates",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "worker_id": worker_id
+                }
+            )
             raise
 
     async def unsubscribe_from_job_updates(self, worker_id: str) -> None:
@@ -116,10 +148,21 @@ class DatabaseService:
             conn = self.job_listeners.pop(worker_id, None)
             if conn:
                 await conn.close()
-                logger.info(f"Worker {worker_id} unsubscribed from job updates")
+                logger.emit(
+                    "Worker unsubscribed from job updates",
+                    severity=Severity.INFO,
+                    attributes={"worker_id": worker_id}
+                )
 
         except Exception as e:
-            logger.error(f"Failed to unsubscribe from job updates: {str(e)}")
+            logger.emit(
+                "Failed to unsubscribe from job updates",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "worker_id": worker_id
+                }
+            )
             raise
 
     @track_time(DB_OPERATION_DURATION, {"operation": "claim_job"})
@@ -168,7 +211,14 @@ class DatabaseService:
                     return Job.parse_obj(dict(row))
 
         except Exception as e:
-            logger.error(f"Failed to claim job: {str(e)}")
+            logger.emit(
+                "Failed to claim job",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "worker_id": worker_id
+                }
+            )
             raise
 
     @track_time(DB_OPERATION_DURATION, {"operation": "release_stale_jobs"})
@@ -201,11 +251,25 @@ class DatabaseService:
 
                 count = int(result.split()[1])
                 if count > 0:
-                    logger.info(f"Released {count} stale jobs")
+                    logger.emit(
+                        "Released stale jobs",
+                        severity=Severity.INFO,
+                        attributes={
+                            "count": count,
+                            "max_lock_duration": max_lock_duration_minutes
+                        }
+                    )
                 return count
 
         except Exception as e:
-            logger.error(f"Failed to release stale jobs: {str(e)}")
+            logger.emit(
+                "Failed to release stale jobs",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "max_lock_duration": max_lock_duration_minutes
+                }
+            )
             raise
 
     # File key operations
@@ -294,7 +358,7 @@ class DatabaseService:
                 query = """
                     SELECT *
                     FROM jobs
-                    WHERE user_id = $1
+                    WHERE owner_id = $1
                 """
                 params = [user_id]
 
@@ -316,7 +380,15 @@ class DatabaseService:
                 return [Job.parse_obj(dict(row)) for row in rows]
 
         except Exception as e:
-            logger.error(f"Failed to get jobs for user {user_id}: {str(e)}")
+            logger.emit(
+                "Failed to get jobs for user",
+                severity=Severity.ERROR,
+                attributes={
+                    "error": str(e),
+                    "user_id": user_id,
+                    "status": status.value if status else None
+                }
+            )
             raise
 
     @track_time(DB_OPERATION_DURATION, {"operation": "get_job_stats"})
@@ -346,7 +418,11 @@ class DatabaseService:
                 return stats
 
         except Exception as e:
-            logger.error(f"Failed to get job stats: {str(e)}")
+            logger.emit(
+                "Failed to get job stats",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise
 
     async def close(self):
@@ -357,14 +433,28 @@ class DatabaseService:
                 try:
                     await conn.close()
                 except Exception as e:
-                    logger.error(f"Error closing listener for worker {worker_id}: {str(e)}")
+                    logger.emit(
+                        "Error closing listener for worker",
+                        severity=Severity.ERROR,
+                        attributes={
+                            "error": str(e),
+                            "worker_id": worker_id
+                        }
+                    )
 
             # Close connection pool
             if self.pool:
                 await self.pool.close()
 
-            logger.info("Database connections closed")
+            logger.emit(
+                "Database connections closed",
+                severity=Severity.INFO
+            )
 
         except Exception as e:
-            logger.error(f"Error closing database connections: {str(e)}")
+            logger.emit(
+                "Error closing database connections",
+                severity=Severity.ERROR,
+                attributes={"error": str(e)}
+            )
             raise

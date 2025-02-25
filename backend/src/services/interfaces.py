@@ -1,4 +1,4 @@
-from typing import Protocol, Optional, List, Dict, Any
+from typing import Protocol, Optional, List, Dict, Any, BinaryIO, Callable
 from datetime import datetime
 import uuid
 from ..models.job import Job, JobStatus, JobPriority, JobFilter, JobUpdate
@@ -9,11 +9,26 @@ class StorageInterface(Protocol):
     async def store_file(
         self,
         user_id: str,
-        data: bytes,
+        data: BinaryIO,
         file_name: str,
-        bucket: str
+        bucket_type: str,
+        file_id: Optional[str] = None,
+        compress: bool = True,
+        chunk_size: int = 8 * 1024 * 1024,  # 8MB chunks
+        progress_callback: Optional[Callable[[float], None]] = None
     ) -> None:
-        """Store a file"""
+        """Store file in bucket using streaming
+        
+        Args:
+            user_id: User ID
+            data: File-like object supporting read()
+            file_name: Name of file
+            bucket_type: Type of storage bucket
+            file_id: Optional file ID for key management
+            compress: Whether to compress the file (default True)
+            chunk_size: Size of chunks for streaming (default 8MB)
+            progress_callback: Optional callback for upload progress (0-100)
+        """
         ...
 
     async def retrieve_file(
@@ -43,12 +58,20 @@ class JobManagerInterface(Protocol):
     async def create_job(
         self,
         user_id: str,
-        file_data: bytes,
+        file_data: BinaryIO,
         file_name: str,
         priority: JobPriority = JobPriority.NORMAL,
         max_retries: Optional[int] = None
     ) -> Job:
-        """Create a new job"""
+        """Create a new job with streaming file upload
+        
+        Args:
+            user_id: User ID
+            file_data: File-like object supporting read()
+            file_name: Name of file
+            priority: Job priority (default NORMAL)
+            max_retries: Maximum retry attempts (optional)
+        """
         ...
 
     async def get_job(
