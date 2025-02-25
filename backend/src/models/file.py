@@ -1,7 +1,7 @@
 from datetime import datetime
 from pydantic import BaseModel, UUID4, Field
-from typing import Optional
-from .job import JobStatus
+from typing import Optional, List
+from .job import JobStatus, TranscriptionOptions
 
 class FileMetadata(BaseModel):
     """File metadata model"""
@@ -31,3 +31,17 @@ class FileResponse(BaseModel):
     created_at: datetime = Field(..., description="Creation timestamp")
     completed_at: Optional[datetime] = Field(None, description="Completion timestamp")
     error: Optional[str] = Field(None, description="Error message if failed")
+    language: Optional[str] = Field(
+        default="de",
+        description="Target language for transcription (ISO 639-1 code)",
+        example="de"
+    )
+    supported_languages: List[str] = Field(
+        default=["de", "en", "fr", "it"],
+        description="List of supported languages",
+        example=["de", "en", "fr", "it"]
+    )
+    options: Optional[TranscriptionOptions] = Field(
+        None,
+        description="Transcription configuration options"
+    )

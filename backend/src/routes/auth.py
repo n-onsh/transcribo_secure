@@ -1,11 +1,8 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 from typing import Dict, List
-from opentelemetry import trace, logs
-from opentelemetry.logs import Severity
 from ..middleware.auth import AuthMiddleware
 from pydantic import BaseModel
-
-logger = logs.get_logger(__name__)
+from ..utils.logging import log_error
 
 router = APIRouter(
     prefix="/auth",
@@ -44,11 +41,7 @@ async def validate_token(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.emit(
-            "Token validation failed",
-            severity=Severity.ERROR,
-            attributes={"error": str(e)}
-        )
+        log_error("Token validation failed", {"error": str(e)})
         raise HTTPException(
             status_code=500,
             detail="Token validation failed"
@@ -68,11 +61,7 @@ async def get_current_user(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.emit(
-            "Failed to get user info",
-            severity=Severity.ERROR,
-            attributes={"error": str(e)}
-        )
+        log_error("Failed to get user info", {"error": str(e)})
         raise HTTPException(
             status_code=500,
             detail="Failed to get user info"
@@ -92,11 +81,7 @@ async def get_user_roles(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.emit(
-            "Failed to get user roles",
-            severity=Severity.ERROR,
-            attributes={"error": str(e)}
-        )
+        log_error("Failed to get user roles", {"error": str(e)})
         raise HTTPException(
             status_code=500,
             detail="Failed to get user roles"
@@ -109,14 +94,10 @@ async def check_role(role: str, request: Request):
         has_role = auth.has_role(request, role)
         return {"has_role": has_role}
     except Exception as e:
-        logger.emit(
-            "Role check failed",
-            severity=Severity.ERROR,
-            attributes={
-                "error": str(e),
-                "role": role
-            }
-        )
+        log_error("Role check failed", {
+            "error": str(e),
+            "role": role
+        })
         raise HTTPException(
             status_code=500,
             detail="Role check failed"

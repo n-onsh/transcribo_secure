@@ -1,336 +1,345 @@
 # API Documentation
 
-## Architecture Overview
+## Authentication
 
-The system follows a service-oriented architecture with clear boundaries and dependencies:
+All endpoints require authentication using Azure AD JWT tokens.
 
-```mermaid
-graph TD
-    R[Routes] --> SP[ServiceProvider]
-    SP --> DB[DatabaseService]
-    SP --> KM[KeyManagementService]
-    SP --> EN[EncryptionService]
-    SP --> ST[StorageService]
-    SP --> JM[JobManager]
-    
-    ST --> DB
-    ST --> KM
-    ST --> EN
-    
-    JM --> DB
-    JM --> ST
+### Headers
+```
+Authorization: Bearer <token>
 ```
 
-### Key Components
+## Endpoints
 
-1. Service Provider
-   - Centralized service initialization
-   - Dependency injection
-   - Service validation
-   - Interface-based design
+### Files
 
-2. Job Queue
-   - PostgreSQL-based queue
-   - Distributed locking with FOR UPDATE SKIP LOCKED
-   - Real-time updates via NOTIFY/LISTEN
-   - Worker health monitoring
-   - Automatic job recovery
-
-3. File Processing
-   - Compression before encryption
-   - End-to-end encryption
-   - Secure key management
-   - File sharing capabilities
-
-## API Endpoints
-
-### Files API
-
-#### POST /api/v1/files/upload
-Upload a file for transcription using streaming upload.
+#### POST /api/files/upload
+Upload a file for transcription.
 
 Request:
-```http
-POST /api/v1/files/upload HTTP/1.1
+```
 Content-Type: multipart/form-data
-Transfer-Encoding: chunked
 
-file: <streaming_file_data>
+file: File
+language: string (optional, default: "de")
+vocabulary: string (optional)
 ```
 
 Response:
 ```json
 {
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "name": "recording.mp3",
+  "job_id": "uuid",
+  "file_name": "string",
   "status": "pending",
-  "created_at": "2025-02-24T07:00:00Z",
-  "upload_progress": 0.0
+  "estimated_time": 300.0,
+  "estimated_range": [240.0, 360.0],
+  "estimate_confidence": 0.8
 }
 ```
 
-Progress Updates (Server-Sent Events):
-```http
-event: upload_progress
-data: {
-  "file_id": "123e4567-e89b-12d3-a456-426614174000",
-  "progress": 0.45,
-  "bytes_processed": 1048576
-}
+### ZIP Files
+
+#### POST /api/zip/upload
+Upload a ZIP file containing multiple audio files for transcription.
+
+Request:
+```
+Content-Type: multipart/form-data
+
+file: File (ZIP archive)
+language: string (optional, default: "de")
 ```
 
-Features:
-- Chunk-by-chunk processing
-- Real-time progress tracking
-- Memory-efficient handling
-- Automatic cleanup on failure
+Response:
+```json
+[
+  {
+    "id": "uuid",
+    "file_name": "string",
+    "status": "pending",
+    "estimated_time": 300.0,
+    "estimated_range": [240.0, 360.0],
+    "estimate_confidence": 0.8,
+    "created_at": "2025-02-25T14:30:00Z"
+  }
+]
+```
 
-#### GET /api/v1/files/{file_id}
-Get file information.
+#### GET /api/zip/progress/{file_id}
+Get ZIP extraction progress.
 
 Response:
 ```json
 {
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "name": "recording.mp3",
+  "file_id": "uuid",
+  "progress": 45.5
+}
+```
+
+#### DELETE /api/zip/{file_id}
+Cancel ZIP extraction.
+
+Response:
+```json
+{
+  "file_id": "uuid",
+  "status": "cancelled"
+}
+```
+
+Validation:
+- Maximum file size: 1GB
+- Maximum files in ZIP: 100
+- Allowed file types: .mp3, .wav, .m4a
+- No encrypted ZIP files
+
+#### GET /api/files/{file_id}
+Get file details and transcription status.
+
+Response:
+```json
+{
+  "id": "uuid",
+  "name": "string",
+  "size": 1024,
+  "created_at": "2025-02-25T14:30:00Z",
   "status": "completed",
-  "created_at": "2025-02-24T07:00:00Z",
-  "completed_at": "2025-02-24T07:05:00Z"
+  "progress": 100.0,
+  "estimated_time": 300.0,
+  "estimated_range": [240.0, 360.0],
+  "estimate_confidence": 0.8,
+  "completed_at": "2025-02-25T14:35:00Z",
+  "actual_duration": 295.5
 }
 ```
 
-### Jobs API
+### Jobs
 
-#### GET /api/v1/jobs/{job_id}
-Get job status and information.
-
-Response:
-```json
-{
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "file_name": "recording.mp3",
-  "status": "processing",
-  "progress": 0.5,
-  "created_at": "2025-02-24T07:00:00Z"
-}
-```
-
-#### GET /api/v1/jobs
-List jobs with optional filtering.
+#### GET /api/jobs
+List transcription jobs.
 
 Parameters:
-- status: Filter by job status
-- limit: Maximum number of jobs to return
-- offset: Pagination offset
+```
+status: string (optional) - Filter by status
+language: string (optional) - Filter by language
+limit: integer (optional, default: 100)
+offset: integer (optional, default: 0)
+```
 
 Response:
 ```json
 {
+  "total": 150,
   "jobs": [
     {
-      "id": "123e4567-e89b-12d3-a456-426614174000",
-      "file_name": "recording.mp3",
-      "status": "completed",
-      "progress": 1.0,
-      "created_at": "2025-02-24T07:00:00Z",
-      "completed_at": "2025-02-24T07:05:00Z"
+      "id": "uuid",
+      "file_name": "string",
+      "status": "processing",
+      "progress": 45.5,
+      "created_at": "2025-02-25T14:30:00Z",
+      "estimated_time": 300.0,
+      "estimated_range": [240.0, 360.0],
+      "estimate_confidence": 0.8,
+      "eta": "2025-02-25T14:35:00Z"
     }
-  ],
-  "total": 1
+  ]
 }
 ```
 
-#### POST /api/v1/jobs/{job_id}/cancel
-Cancel a running job.
+#### GET /api/jobs/{job_id}
+Get job details.
 
 Response:
 ```json
 {
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "status": "cancelled",
-  "cancelled_at": "2025-02-24T07:02:00Z"
-}
-```
-
-#### POST /api/v1/jobs/{job_id}/retry
-Retry a failed job.
-
-Response:
-```json
-{
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "status": "pending",
-  "retry_count": 1
-}
-```
-
-### Transcriptions API
-
-#### GET /api/v1/transcriptions/{job_id}
-Get transcription result.
-
-Response:
-```json
-{
-  "job_id": "123e4567-e89b-12d3-a456-426614174000",
-  "text": "Transcribed text content...",
-  "segments": [
-    {
-      "start": 0.0,
-      "end": 5.2,
-      "text": "First segment..."
-    }
-  ],
-  "speakers": [
-    {
-      "id": "speaker_1",
-      "segments": [0, 2, 4]
-    }
-  ],
-  "language": "en",
-  "duration": 300.5,
-  "word_count": 150,
-  "confidence": 0.95
-}
-```
-
-### Keys API
-
-#### GET /api/v1/keys/files/{file_id}/key
-Get file encryption key.
-
-Response:
-```json
-{
-  "file_id": "123e4567-e89b-12d3-a456-426614174000",
-  "owner_id": "user123",
-  "encrypted_key": "base64_encoded_key",
-  "created_at": "2025-02-24T07:00:00Z"
-}
-```
-
-#### POST /api/v1/keys/files/{file_id}/shares/{user_id}
-Share file key with another user.
-
-Response:
-```json
-{
-  "file_id": "123e4567-e89b-12d3-a456-426614174000",
-  "user_id": "user456",
-  "created_at": "2025-02-24T07:00:00Z"
-}
-```
-
-## Error Handling
-
-All endpoints follow a consistent error response format:
-
-```json
-{
-  "code": "ERROR_TYPE",
-  "message": "Human readable message",
-  "details": {
-    "field": "specific_field",
-    "reason": "specific reason"
+  "id": "uuid",
+  "file_name": "string",
+  "status": "processing",
+  "progress": 45.5,
+  "created_at": "2025-02-25T14:30:00Z",
+  "updated_at": "2025-02-25T14:32:30Z",
+  "estimated_time": 300.0,
+  "estimated_range": [240.0, 360.0],
+  "estimate_confidence": 0.8,
+  "eta": "2025-02-25T14:35:00Z",
+  "options": {
+    "language": "de",
+    "vocabulary": ["word1", "word2"]
   }
 }
 ```
 
-Error Categories:
-- 400: Validation errors
-- 401: Authentication errors
-- 403: Authorization errors
-- 404: Resource not found
-- 409: Resource conflicts
-- 500: Internal server errors
-- 503: Service unavailable
+#### DELETE /api/jobs/{job_id}
+Cancel a job.
 
-## Authentication
-
-All endpoints except /auth require a valid JWT token:
-
-```http
-Authorization: Bearer <token>
-```
-
-Token claims:
+Response:
 ```json
 {
-  "sub": "user123",
-  "roles": ["user"],
-  "exp": 1708747200
+  "id": "uuid",
+  "status": "cancelled",
+  "cancelled_at": "2025-02-25T14:33:00Z"
 }
 ```
 
-## Rate Limiting
+### Time Estimation
 
-Rate limiting has been removed in favor of worker-based concurrency control:
-- Job processing is limited by available workers
-- Workers claim jobs based on priority
-- Failed jobs use exponential backoff
-- Stale jobs are automatically recovered
+#### GET /api/estimate
+Get processing time estimate.
 
-## Observability
+Parameters:
+```
+duration: number (required) - Audio duration in seconds
+language: string (required) - Target language code
+```
 
-### OpenTelemetry Integration
-
-1. Logging:
+Response:
 ```json
 {
-  "timestamp": "2025-02-24T07:00:00Z",
-  "severity": "INFO",
-  "service": "backend",
-  "trace_id": "1234...",
-  "span_id": "5678...",
-  "attributes": {
-    "operation": "upload_file",
-    "user_id": "user123",
-    "file_name": "recording.mp3",
-    "file_size": 1048576
+  "estimated_time": 300.0,
+  "range": [240.0, 360.0],
+  "confidence": 0.8
+}
+```
+
+#### GET /api/performance
+Get performance metrics by language.
+
+Response:
+```json
+{
+  "de": {
+    "total_jobs": 100,
+    "avg_processing_time": 300.0,
+    "min_processing_time": 200.0,
+    "max_processing_time": 400.0,
+    "avg_word_count": 1000,
+    "seconds_per_word": 0.3
   },
-  "message": "Started file upload"
+  "en": {
+    "total_jobs": 50,
+    "avg_processing_time": 250.0,
+    "min_processing_time": 150.0,
+    "max_processing_time": 350.0,
+    "avg_word_count": 800,
+    "seconds_per_word": 0.25
+  }
 }
 ```
 
-2. Metrics:
-- Prometheus format with OpenTelemetry attributes
-- Custom business metrics:
-  * job_processing_duration_seconds
-  * job_queue_size
-  * job_retry_count
-  * storage_bytes
-  * db_connections
-  * upload_duration_seconds
-  * upload_bytes_total
-  * upload_errors_total
+### Vocabulary
 
-3. Tracing:
-- Distributed tracing across services
-- Automatic context propagation
-- Span attributes for debugging
-- Parent-child relationship tracking
+#### POST /api/vocabulary
+Create vocabulary list.
 
-## Configuration
-
-Required environment variables:
-```bash
-# Database
-POSTGRES_PASSWORD=<password>
-
-# Storage
-MINIO_ACCESS_KEY=<access_key>
-MINIO_SECRET_KEY=<secret_key>
-
-# Optional with defaults
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-MINIO_HOST=localhost
-MINIO_PORT=9000
+Request:
+```json
+{
+  "name": "string",
+  "language": "de",
+  "terms": ["word1", "word2"]
+}
 ```
 
-Service settings:
-- Database pool: min=5, max=20
-- Job timeout: 120 minutes
-- Cleanup interval: 24 hours
-- Max retries: 3
-- Chunk size: 8MB
+Response:
+```json
+{
+  "id": "uuid",
+  "name": "string",
+  "language": "de",
+  "terms": ["word1", "word2"],
+  "created_at": "2025-02-25T14:30:00Z"
+}
+```
+
+#### GET /api/vocabulary
+List vocabulary lists.
+
+Parameters:
+```
+language: string (optional) - Filter by language
+```
+
+Response:
+```json
+{
+  "lists": [
+    {
+      "id": "uuid",
+      "name": "string",
+      "language": "de",
+      "term_count": 10,
+      "created_at": "2025-02-25T14:30:00Z"
+    }
+  ]
+}
+```
+
+## Error Responses
+
+### 400 Bad Request
+```json
+{
+  "error": "validation_error",
+  "message": "Invalid request parameters",
+  "details": {
+    "field": ["error message"]
+  }
+}
+```
+
+### 401 Unauthorized
+```json
+{
+  "error": "unauthorized",
+  "message": "Invalid or expired token"
+}
+```
+
+### 403 Forbidden
+```json
+{
+  "error": "forbidden",
+  "message": "Insufficient permissions"
+}
+```
+
+### 404 Not Found
+```json
+{
+  "error": "not_found",
+  "message": "Resource not found"
+}
+```
+
+### 500 Internal Server Error
+```json
+{
+  "error": "internal_error",
+  "message": "Internal server error"
+}
+```
+
+## WebSocket Events
+
+### Job Updates
+```json
+{
+  "type": "job_update",
+  "job_id": "uuid",
+  "status": "processing",
+  "progress": 45.5,
+  "estimated_time": 300.0,
+  "estimated_range": [240.0, 360.0],
+  "estimate_confidence": 0.8,
+  "eta": "2025-02-25T14:35:00Z"
+}
+```
+
+### Error Events
+```json
+{
+  "type": "error",
+  "error": "processing_error",
+  "message": "Error processing file",
+  "job_id": "uuid"
+}

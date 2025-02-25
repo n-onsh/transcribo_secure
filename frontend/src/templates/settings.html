@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - Transcribo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .settings-section {
+            background-color: #fff;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        .settings-section h5 {
+            color: #0d6efd;
+            margin-bottom: 1rem;
+        }
+        .form-check-input:checked {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+        }
+        .help-text {
+            font-size: 0.875rem;
+            color: #6c757d;
+            margin-top: 0.25rem;
+        }
+        .save-indicator {
+            font-size: 0.875rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .save-indicator.show {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">Transcribo</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/upload">Upload</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/jobs">Jobs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/settings">Settings</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/help">Help</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Content -->
+    <div class="container mt-4">
+        <h3 class="mb-4">Settings</h3>
+
+        <!-- Language Settings -->
+        <div class="settings-section">
+            <h5>
+                <i class="bi bi-translate me-2"></i>
+                Language Settings
+            </h5>
+            <div class="mb-3">
+                <label class="form-label">Default Language</label>
+                <select class="form-select" id="default-language">
+                    <option value="de">German (Deutsch)</option>
+                    <option value="en">English</option>
+                    <option value="fr">French (Français)</option>
+                    <option value="it">Italian (Italiano)</option>
+                </select>
+                <div class="help-text">
+                    This language will be pre-selected when uploading new files.
+                </div>
+            </div>
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="auto-detect-language">
+                <label class="form-check-label" for="auto-detect-language">
+                    Enable automatic language detection
+                </label>
+                <div class="help-text">
+                    Attempt to detect the audio language automatically. May increase processing time.
+                </div>
+            </div>
+        </div>
+
+        <!-- Processing Settings -->
+        <div class="settings-section">
+            <h5>
+                <i class="bi bi-gear me-2"></i>
+                Processing Settings
+            </h5>
+            <div class="mb-3">
+                <label class="form-label">Processing Quality</label>
+                <select class="form-select" id="processing-quality">
+                    <option value="fast">Fast (Lower accuracy)</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="accurate">Accurate (Slower processing)</option>
+                </select>
+                <div class="help-text">
+                    Higher quality settings will take longer to process but may provide better results.
+                </div>
+            </div>
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="enable-noise-reduction">
+                <label class="form-check-label" for="enable-noise-reduction">
+                    Enable noise reduction
+                </label>
+                <div class="help-text">
+                    Apply noise reduction to improve transcription quality for noisy audio.
+                </div>
+            </div>
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="enable-speaker-detection">
+                <label class="form-check-label" for="enable-speaker-detection">
+                    Enable speaker detection
+                </label>
+                <div class="help-text">
+                    Attempt to identify different speakers in the audio.
+                </div>
+            </div>
+        </div>
+
+        <!-- Notification Settings -->
+        <div class="settings-section">
+            <h5>
+                <i class="bi bi-bell me-2"></i>
+                Notification Settings
+            </h5>
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="notify-completion">
+                <label class="form-check-label" for="notify-completion">
+                    Notify when transcription completes
+                </label>
+            </div>
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="notify-errors">
+                <label class="form-check-label" for="notify-errors">
+                    Notify on transcription errors
+                </label>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Notification Method</label>
+                <select class="form-select" id="notification-method">
+                    <option value="browser">Browser Notifications</option>
+                    <option value="email">Email</option>
+                    <option value="both">Both</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Display Settings -->
+        <div class="settings-section">
+            <h5>
+                <i class="bi bi-display me-2"></i>
+                Display Settings
+            </h5>
+            <div class="mb-3">
+                <label class="form-label">Theme</label>
+                <select class="form-select" id="theme">
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                    <option value="system">System Default</option>
+                </select>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Jobs Per Page</label>
+                <select class="form-select" id="jobs-per-page">
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+            </div>
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="show-time-estimates">
+                <label class="form-check-label" for="show-time-estimates">
+                    Show processing time estimates
+                </label>
+            </div>
+        </div>
+
+        <!-- Save Button -->
+        <div class="d-flex align-items-center mb-4">
+            <button class="btn btn-primary" id="save-settings">
+                Save Settings
+            </button>
+            <span class="save-indicator ms-3 text-success" id="save-indicator">
+                <i class="bi bi-check-circle me-1"></i>
+                Settings saved successfully
+            </span>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Load settings
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                const settings = await response.json();
+
+                // Apply settings to form
+                document.getElementById('default-language').value = settings.default_language;
+                document.getElementById('auto-detect-language').checked = settings.auto_detect_language;
+                document.getElementById('processing-quality').value = settings.processing_quality;
+                document.getElementById('enable-noise-reduction').checked = settings.enable_noise_reduction;
+                document.getElementById('enable-speaker-detection').checked = settings.enable_speaker_detection;
+                document.getElementById('notify-completion').checked = settings.notify_completion;
+                document.getElementById('notify-errors').checked = settings.notify_errors;
+                document.getElementById('notification-method').value = settings.notification_method;
+                document.getElementById('theme').value = settings.theme;
+                document.getElementById('jobs-per-page').value = settings.jobs_per_page;
+                document.getElementById('show-time-estimates').checked = settings.show_time_estimates;
+
+                // Apply theme
+                applyTheme(settings.theme);
+            } catch (error) {
+                console.error('Failed to load settings:', error);
+            }
+        }
+
+        // Save settings
+        async function saveSettings() {
+            const settings = {
+                default_language: document.getElementById('default-language').value,
+                auto_detect_language: document.getElementById('auto-detect-language').checked,
+                processing_quality: document.getElementById('processing-quality').value,
+                enable_noise_reduction: document.getElementById('enable-noise-reduction').checked,
+                enable_speaker_detection: document.getElementById('enable-speaker-detection').checked,
+                notify_completion: document.getElementById('notify-completion').checked,
+                notify_errors: document.getElementById('notify-errors').checked,
+                notification_method: document.getElementById('notification-method').value,
+                theme: document.getElementById('theme').value,
+                jobs_per_page: document.getElementById('jobs-per-page').value,
+                show_time_estimates: document.getElementById('show-time-estimates').checked
+            };
+
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(settings)
+                });
+
+                if (response.ok) {
+                    showSaveIndicator();
+                    applyTheme(settings.theme);
+                }
+            } catch (error) {
+                console.error('Failed to save settings:', error);
+            }
+        }
+
+        // Show save indicator
+        function showSaveIndicator() {
+            const indicator = document.getElementById('save-indicator');
+            indicator.classList.add('show');
+            setTimeout(() => {
+                indicator.classList.remove('show');
+            }, 3000);
+        }
+
+        // Apply theme
+        function applyTheme(theme) {
+            if (theme === 'system') {
+                theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+            document.documentElement.setAttribute('data-bs-theme', theme);
+        }
+
+        // Setup event listeners
+        document.getElementById('save-settings').onclick = saveSettings;
+        document.getElementById('theme').onchange = () => {
+            applyTheme(document.getElementById('theme').value);
+        };
+
+        // Watch for system theme changes
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            if (document.getElementById('theme').value === 'system') {
+                applyTheme('system');
+            }
+        });
+
+        // Initial load
+        loadSettings();
+    </script>
+</body>
+</html>

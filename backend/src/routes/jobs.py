@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status
 from typing import List, Optional
-from ..models.job import JobResponse, JobUpdate
+from ..models.job import JobResponse, JobUpdate, TranscriptionOptions
 from ..services.interfaces import JobManagerInterface
 from ..services.provider import service_provider
 from ..utils.exceptions import ResourceNotFoundError, AuthorizationError
@@ -44,7 +44,10 @@ async def get_job(
             progress=job.progress,
             error=job.error,
             created_at=job.created_at,
-            completed_at=job.completed_at
+            completed_at=job.completed_at,
+            options=job.options,
+            language=job.options.language,
+            supported_languages=job.options.supported_languages
         )
 
     except ResourceNotFoundError:
@@ -73,7 +76,8 @@ async def get_job(
 async def list_jobs(
     user_id: str = None,  # Set by auth middleware
     limit: Optional[int] = 100,
-    offset: Optional[int] = 0
+    offset: Optional[int] = 0,
+    language: Optional[str] = None
 ):
     """List jobs for a user"""
     try:
@@ -85,11 +89,12 @@ async def list_jobs(
                 detail="Service unavailable"
             )
 
-        # Get jobs
+        # Get jobs with language filter
         jobs = await job_manager.list_jobs(
             user_id=user_id,
             limit=limit,
-            offset=offset
+            offset=offset,
+            language=language
         )
 
         return [
@@ -100,7 +105,10 @@ async def list_jobs(
                 progress=job.progress,
                 error=job.error,
                 created_at=job.created_at,
-                completed_at=job.completed_at
+                completed_at=job.completed_at,
+                options=job.options,
+                language=job.options.language,
+                supported_languages=job.options.supported_languages
             )
             for job in jobs
         ]
@@ -142,7 +150,10 @@ async def cancel_job(
             progress=job.progress,
             error=job.error,
             created_at=job.created_at,
-            completed_at=job.completed_at
+            completed_at=job.completed_at,
+            options=job.options,
+            language=job.options.language,
+            supported_languages=job.options.supported_languages
         )
 
     except ResourceNotFoundError:
@@ -192,7 +203,10 @@ async def retry_job(
             progress=job.progress,
             error=job.error,
             created_at=job.created_at,
-            completed_at=job.completed_at
+            completed_at=job.completed_at,
+            options=job.options,
+            language=job.options.language,
+            supported_languages=job.options.supported_languages
         )
 
     except ResourceNotFoundError:

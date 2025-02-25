@@ -1,362 +1,281 @@
 # Security Documentation
 
-## Architecture Security
+## Overview
 
-### Service Boundaries
-```mermaid
-graph TD
-    subgraph Docker Network
-        subgraph Public
-            R[Routes]
-            A[Auth Middleware]
-        end
-        
-        subgraph Services
-            SP[ServiceProvider]
-            DB[DatabaseService]
-            KM[KeyManagementService]
-            EN[EncryptionService]
-            ST[StorageService]
-            JM[JobManager]
-        end
-        
-        subgraph Storage
-            M[MinIO]
-            P[PostgreSQL]
-        end
-        
-        R --> A
-        A --> SP
-        SP --> DB
-        SP --> KM
-        SP --> EN
-        SP --> ST
-        SP --> JM
-        
-        ST --> M
-        DB --> P
-    end
-```
+This document outlines the security measures implemented in the Transcribo Secure system.
 
-### Security Layers
+## Authentication
 
-1. Network Layer
-   - Docker network isolation
-   - Container-to-container communication
-   - External TLS termination
-   - Network segmentation
+### Azure AD Integration
+- JWT token validation
+- Role-based access control
+- Token refresh mechanism
+- Session management
 
-2. Authentication Layer
-   - JWT-based authentication
-   - Token validation
-   - Role-based access control
-   - Secure token storage
-
-3. Service Layer
-   - Interface-based design
-   - Service validation
-   - Dependency injection
-   - Error handling
-
-4. Encryption Layer
-   - End-to-end encryption
-   - Key management
-   - File key sharing
-   - Secure key storage
-
-5. Storage Layer
-   - Encrypted storage
-   - Access control
-   - Secure file deletion
-   - Bucket isolation
-
-## Container Security
-
-### Network Security
-```mermaid
-graph TD
-    subgraph Docker Network
-        B[Backend]
-        T[Transcriber]
-        F[Frontend]
-        
-        B <--> |Internal Network| T
-        F --> |Internal Network| B
-    end
-    
-    subgraph External
-        C[Client]
-        C --> |HTTPS| F
-    end
-```
-
-1. Docker Network
-   - Isolated network namespace
-   - Internal DNS resolution
-   - Container-to-container routing
-   - Network policy enforcement
-
-2. Communication
-   - Internal traffic stays within Docker network
-   - No exposure to external networks
-   - Service authentication via tokens
-   - Request validation
-
-3. External Access
-   - TLS termination at edge
-   - HTTPS for all external traffic
-   - Certificate management
-   - CORS configuration
-
-## File Security
-
-### Encryption Process
-```mermaid
-graph TD
-    F[File] --> S[Stream]
-    S --> C[Compress]
-    C --> E[Encrypt]
-    E --> ST[Store]
-    
-    subgraph Keys
-        FK[File Key] --> EK[Encrypt Key]
-        UK[User Key] --> EK
-        EK --> SK[Store Key]
-    end
-```
-
-1. File Processing
-   - Secure streaming upload:
-     * Chunk-by-chunk processing
-     * Memory-efficient handling
-     * Progress tracking
-     * Automatic cleanup
-   - File validation:
-     * Type checking
-     * Size limits
-     * Content validation
-   - Secure processing:
-     * Compression before encryption
-     * Unique file key generation
-     * End-to-end encryption
-     * Secure storage
-
-2. Key Management
-   - Generate random file keys
-   - Encrypt file keys with user keys
-   - Store encrypted keys in database
-   - Secure key sharing
-   - Azure KeyVault integration (optional):
-     * Development fallback to environment variables
-     * Automatic migration path to production
-     * Secure credential handling
-
-3. Access Control
-   - Owner-based access
-   - Key-based sharing
-   - Permission validation
-   - Audit logging
-
-## Job Security
-
-### Job Queue Security
-```mermaid
-graph TD
-    subgraph Queue
-        L[Lock] --> C[Claim]
-        C --> P[Process]
-        P --> U[Update]
-    end
-    
-    subgraph Recovery
-        H[Health Check]
-        S[Stale Jobs]
-        R[Retry]
-    end
-    
-    L --> |FOR UPDATE| J1[Job 1]
-    L --> |SKIP LOCKED| J2[Job 2]
-    H --> S
-    S --> R
-```
-
-1. Job Claiming
-   - Distributed locking
-   - FOR UPDATE SKIP LOCKED
-   - Worker validation
-   - Timeout handling
-
-2. Job Processing
-   - Worker authentication
-   - Progress tracking
-   - Error handling
-   - Automatic recovery
-
-3. Job Recovery
-   - Health monitoring
-   - Stale job detection
-   - Automatic retry
-   - Exponential backoff
+### API Security
+- Rate limiting
+- Request validation
+- CORS configuration
+- Input sanitization
 
 ## Data Protection
 
-### User Data
-- Personal data encryption
-- Secure data deletion
-- Access logging
-- Data isolation
+### File Encryption
+1. End-to-end encryption
+2. Secure key management
+3. Key rotation policies
+4. Access control
 
-### File Data
-- End-to-end encryption
-- Secure key management
-- Access control
-- Secure deletion
-- Streaming data protection:
-  * Chunk validation
-  * Progress verification
-  * Memory limits
-  * Cleanup on failure
+### Database Security
+1. Connection encryption
+2. Password hashing
+3. Access control
+4. Audit logging
 
-### Job Data
-- Job isolation
-- Progress protection
-- Result encryption
-- Audit logging
+### Storage Security
+1. MinIO encryption
+2. Access policies
+3. Bucket isolation
+4. Lifecycle management
 
-## Monitoring & Auditing
+## Network Security
 
-### OpenTelemetry Integration
-```mermaid
-graph TD
-    L[Logs] --> OT[OpenTelemetry]
-    M[Metrics] --> OT
-    T[Traces] --> OT
-    
-    OT --> C[Collector]
-    C --> LK[Loki]
-    C --> PR[Prometheus]
-    C --> TP[Tempo]
-    
-    subgraph Correlation
-        TR[Trace ID]
-        SP[Span ID]
-        AT[Attributes]
-    end
-```
+### TLS Configuration
+1. Certificate management
+2. Protocol versions
+3. Cipher suites
+4. Key management
 
-1. Structured Logging
-   - Severity levels
-   - Rich context attributes
-   - Error details
-   - Request correlation
+### Firewall Rules
+1. Port restrictions
+2. Service isolation
+3. Network policies
+4. Traffic monitoring
 
-2. Security Metrics
-   - Authentication failures
-   - Access attempts
-   - Job failures
-   - Storage usage
-   - Upload metrics:
-     * Duration
-     * Bytes processed
-     * Error rates
-     * Memory usage
+## Performance Security
 
-3. Distributed Tracing
-   - Request tracking
-   - Error correlation
-   - Performance monitoring
-   - Security event tracking
+### Time Estimation Protection
+1. Input Validation
+   - Duration limits
+   - Language validation
+   - Parameter sanitization
+   - Request rate limiting
 
-### Audit Logging
-- Access logs with context
-- Operation logs with tracing
-- Error logs with correlation
-- Security events with attributes
+2. Statistics Protection
+   - Access control
+   - Data anonymization
+   - Aggregation limits
+   - Query restrictions
 
-### Health Monitoring
-- Service health with metrics
-- Worker health tracking
-- Storage monitoring
-- Database health checks
+3. Cache Security
+   - Memory limits
+   - Access control
+   - Eviction policies
+   - Resource isolation
 
-## Configuration Security
+4. Resource Protection
+   - CPU limits
+   - Memory quotas
+   - Storage quotas
+   - Network limits
 
-### Environment Variables
-```bash
-# Required
-POSTGRES_PASSWORD=<secure_password>
-MINIO_ACCESS_KEY=<access_key>
-MINIO_SECRET_KEY=<secret_key>
+### Job Queue Security
+1. Access Control
+   - Job ownership
+   - Permission checks
+   - Status validation
+   - Resource limits
 
-# Azure KeyVault (optional)
-AZURE_KEYVAULT_URL=<url>
-AZURE_TENANT_ID=<id>
-AZURE_CLIENT_ID=<id>
-AZURE_CLIENT_SECRET=<secret>
+2. Resource Protection
+   - Processing limits
+   - Storage quotas
+   - Memory limits
+   - Network quotas
 
-# Optional with secure defaults
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-MINIO_HOST=localhost
-MINIO_PORT=9000
-```
+3. Statistics Security
+   - Data anonymization
+   - Access control
+   - Aggregation limits
+   - Retention policies
 
-### Service Configuration
-- Secure defaults
-- Configuration validation
-- Secret management
-- Error handling
+## Monitoring Security
+
+### Logging
+1. Structured logging
+2. Log encryption
+3. Access control
+4. Retention policies
+
+### Metrics
+1. Access control
+2. Data anonymization
+3. Aggregation rules
+4. Retention policies
+
+### Alerts
+1. Access control
+2. Alert routing
+3. Notification security
+4. Response procedures
+
+## Container Security
+
+### Docker Security
+1. Image scanning
+2. Resource limits
+3. Network isolation
+4. Volume security
+
+### Service Security
+1. Process isolation
+2. Resource quotas
+3. Network policies
+4. Access control
 
 ## Development Security
 
 ### Code Security
-- Interface-based design
-- Type safety
-- Error handling
-- Input validation
-- Memory management:
-  * Streaming processing
-  * Resource limits
-  * Cleanup procedures
+1. Static analysis
+2. Dependency scanning
+3. Code review
+4. Security testing
 
-### Testing
-- Security tests
-- Concurrency tests
-- Error tests
-- Recovery tests
-- Streaming tests:
-  * Upload validation
-  * Progress tracking
-  * Memory efficiency
-  * Error handling
+### CI/CD Security
+1. Pipeline security
+2. Secret management
+3. Access control
+4. Deployment validation
 
-### Deployment
-- Secure builds
-- Container security
-- Network isolation
-- Health monitoring
+## Operational Security
+
+### Access Control
+1. Role-based access
+2. Permission management
+3. Access review
+4. Audit logging
+
+### Secret Management
+1. Key rotation
+2. Access control
+3. Storage security
+4. Usage monitoring
+
+### Backup Security
+1. Encryption
+2. Access control
+3. Storage security
+4. Recovery testing
 
 ## Incident Response
 
 ### Detection
-- Error monitoring with context
-- Security alerts with correlation
-- Health checks with metrics
-- Audit logs with tracing
+1. Log monitoring
+2. Alert configuration
+3. Anomaly detection
+4. Security scanning
+
+### Response
+1. Incident classification
+2. Response procedures
+3. Communication plan
+4. Recovery steps
 
 ### Recovery
-- Automatic recovery
-- Job retry
-- Worker failover
-- Data protection
-- Upload recovery:
-  * Chunk validation
-  * Progress resumption
-  * State recovery
-  * Cleanup procedures
+1. Backup restoration
+2. Service recovery
+3. Data validation
+4. Security review
+
+## Compliance
+
+### Data Protection
+1. GDPR compliance
+2. Data minimization
+3. Access controls
+4. Retention policies
+
+### Audit
+1. Security audits
+2. Access reviews
+3. Policy compliance
+4. Documentation
+
+## Security Best Practices
+
+### Code Security
+1. Input validation
+2. Output encoding
+3. Error handling
+4. Secure defaults
+
+### API Security
+1. Authentication
+2. Authorization
+3. Rate limiting
+4. Input validation
+
+### Data Security
+1. Encryption
+2. Access control
+3. Data validation
+4. Secure storage
+
+### Operation Security
+1. Monitoring
+2. Alerting
+3. Response
+4. Recovery
+
+## Security Maintenance
+
+### Regular Tasks
+1. Certificate rotation
+2. Secret rotation
+3. Access review
+4. Security patches
+
+### Monitoring Tasks
+1. Log review
+2. Alert review
+3. Performance monitoring
+4. Security scanning
+
+### Update Procedures
+1. Security patches
+2. Dependency updates
+3. Configuration review
+4. Documentation updates
+
+## Security Documentation
+
+### Policies
+1. Access control
+2. Data protection
+3. Network security
+4. Incident response
+
+### Procedures
+1. Security review
+2. Incident response
+3. Recovery process
+4. Audit procedures
+
+### Guidelines
+1. Development security
+2. Operational security
+3. Data handling
+4. Access management
+
+## Security Contacts
+
+### Emergency Contacts
+1. Security team
+2. Operations team
+3. Management
+4. External support
 
 ### Reporting
-- Structured error logging
-- Security event correlation
-- Audit trail tracking
-- Metrics aggregation
+1. Security issues
+2. Incidents
+3. Vulnerabilities
+4. Concerns

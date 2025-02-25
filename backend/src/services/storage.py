@@ -8,8 +8,8 @@ from minio.error import S3Error
 from datetime import datetime, timedelta
 import tempfile
 import magic
-from opentelemetry import trace, logs
-from opentelemetry.logs import Severity
+from opentelemetry import trace
+from ..utils.logging import log_info, log_error
 from ..models.file_key import FileKeyCreate
 from ..services.interfaces import (
     StorageInterface,
@@ -26,7 +26,6 @@ from ..utils.metrics import (
     update_gauge
 )
 
-logger = logs.get_logger(__name__)
 
 class StorageService(StorageInterface):
     def __init__(
@@ -113,25 +112,15 @@ class StorageService(StorageInterface):
                 exists = await asyncio.to_thread(self.client.bucket_exists, bucket_name)
                 if not exists:
                     await asyncio.to_thread(self.client.make_bucket, bucket_name)
-                    logger.emit(
-                        f"Created bucket: {bucket_name}",
-                        severity=Severity.INFO
-                    )
+                    log_info(f"Created bucket: {bucket_name}")
                 
                 # Note: Bucket versioning is not supported in minio-py 7.1.17
                 # We'll handle versioning at the application level if needed
                 if bucket_config["versioned"]:
-                    logger.emit(
-                        f"Bucket versioning configured for: {bucket_name}",
-                        severity=Severity.INFO
-                    )
+                    log_info(f"Bucket versioning configured for: {bucket_name}")
             
         except Exception as e:
-            logger.emit(
-                "Failed to initialize buckets",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Failed to initialize buckets", {"error": str(e)})
             raise
 
     def _get_object_path(self, user_id: str, file_name: str) -> str:
@@ -167,11 +156,7 @@ class StorageService(StorageInterface):
                     )
                     
         except Exception as e:
-            logger.emit(
-                "File validation failed",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("File validation failed", {"error": str(e)})
             raise
 
     def _compress_data(self, data: bytes) -> bytes:
@@ -179,11 +164,7 @@ class StorageService(StorageInterface):
         try:
             return gzip.compress(data)
         except Exception as e:
-            logger.emit(
-                "Data compression failed",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Data compression failed", {"error": str(e)})
             raise
 
     def _decompress_data(self, data: bytes) -> bytes:
@@ -191,11 +172,7 @@ class StorageService(StorageInterface):
         try:
             return gzip.decompress(data)
         except Exception as e:
-            logger.emit(
-                "Data decompression failed",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Data decompression failed", {"error": str(e)})
             raise
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "store", "bucket": "unknown"})
@@ -358,31 +335,23 @@ class StorageService(StorageInterface):
                 # Update storage metrics
                 await self.update_bucket_size_metric(bucket_type)
                 
-                logger.emit(
-                    "Stored encrypted file",
-                    severity=Severity.INFO,
-                    attributes={
-                        "file_name": file_name,
-                        "user_id": user_id,
-                        "bucket": bucket_type
-                    }
-                )
+                log_info("Stored encrypted file", {
+                    "file_name": file_name,
+                    "user_id": user_id,
+                    "bucket": bucket_type
+                })
                 
             finally:
                 # Clean up temp file
                 os.unlink(temp_path)
             
         except Exception as e:
-            logger.emit(
-                "Failed to store file",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "file_name": file_name,
-                    "user_id": user_id,
-                    "bucket": bucket_type
-                }
-            )
+            log_error("Failed to store file", {
+                "error": str(e),
+                "file_name": file_name,
+                "user_id": user_id,
+                "bucket": bucket_type
+            })
             raise
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "retrieve", "bucket": "unknown"})
@@ -452,17 +421,13 @@ class StorageService(StorageInterface):
                 os.unlink(temp_path)
             
         except Exception as e:
-            logger.emit(
-                "Failed to retrieve file",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "file_name": file_name,
-                    "user_id": user_id,
-                    "bucket": bucket_type,
-                    "file_id": file_id
-                }
-            )
+            log_error("Failed to retrieve file", {
+                "error": str(e),
+                "file_name": file_name,
+                "user_id": user_id,
+                "bucket": bucket_type,
+                "file_id": file_id
+            })
             raise
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "delete", "bucket": "unknown"})
@@ -491,27 +456,19 @@ class StorageService(StorageInterface):
             # Update storage metrics
             await self.update_bucket_size_metric(bucket_type)
             
-            logger.emit(
-                "Deleted file",
-                severity=Severity.INFO,
-                attributes={
-                    "file_name": file_name,
-                    "user_id": user_id,
-                    "bucket": bucket_type
-                }
-            )
+            log_info("Deleted file", {
+                "file_name": file_name,
+                "user_id": user_id,
+                "bucket": bucket_type
+            })
             
         except Exception as e:
-            logger.emit(
-                "Failed to delete file",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "file_name": file_name,
-                    "user_id": user_id,
-                    "bucket": bucket_type
-                }
-            )
+            log_error("Failed to delete file", {
+                "error": str(e),
+                "file_name": file_name,
+                "user_id": user_id,
+                "bucket": bucket_type
+            })
             raise
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "list", "bucket": "unknown"})
@@ -567,15 +524,11 @@ class StorageService(StorageInterface):
             return files
             
         except Exception as e:
-            logger.emit(
-                "Failed to list files",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id,
-                    "bucket": bucket_type
-                }
-            )
+            log_error("Failed to list files", {
+                "error": str(e),
+                "user_id": user_id,
+                "bucket": bucket_type
+            })
             raise
 
     async def get_bucket_size(self, bucket_type: str) -> int:
@@ -595,14 +548,10 @@ class StorageService(StorageInterface):
             return total_size
             
         except Exception as e:
-            logger.emit(
-                "Failed to get bucket size",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "bucket": bucket_type
-                }
-            )
+            log_error("Failed to get bucket size", {
+                "error": str(e),
+                "bucket": bucket_type
+            })
             return 0
 
     async def update_bucket_size_metric(self, bucket_type: str):
@@ -611,14 +560,10 @@ class StorageService(StorageInterface):
             size = await self.get_bucket_size(bucket_type)
             update_gauge(STORAGE_BYTES, size, {"bucket": bucket_type})
         except Exception as e:
-            logger.emit(
-                "Failed to update storage metrics",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "bucket": bucket_type
-                }
-            )
+            log_error("Failed to update storage metrics", {
+                "error": str(e),
+                "bucket": bucket_type
+            })
 
     @track_time(STORAGE_OPERATION_DURATION, {"operation_name": "cleanup", "bucket": "temp"})
     @track_errors(STORAGE_OPERATION_ERRORS, {"operation_name": "cleanup", "bucket": "temp", "error_type": "unknown"})
@@ -648,12 +593,8 @@ class StorageService(StorageInterface):
             await self.update_bucket_size_metric("temp")
             
         except Exception as e:
-            logger.emit(
-                "Failed to cleanup temp files",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "max_age": max_age
-                }
-            )
+            log_error("Failed to cleanup temp files", {
+                "error": str(e),
+                "max_age": max_age
+            })
             raise

@@ -20,6 +20,23 @@ class TranscriptionOptions(BaseModel):
         description="Whether to generate SRT subtitle file",
         example=True
     )
+    language: Optional[str] = Field(
+        default="de",
+        description="Target language for transcription (ISO 639-1 code)",
+        example="de"
+    )
+    supported_languages: List[str] = Field(
+        default=["de", "en", "fr", "it"],
+        description="List of supported languages",
+        example=["de", "en", "fr", "it"]
+    )
+
+    @validator("language")
+    def validate_language(cls, v, values):
+        """Validate language is supported"""
+        if v and values.get("supported_languages") and v not in values["supported_languages"]:
+            raise ValueError(f"Language {v} not in supported languages: {values['supported_languages']}")
+        return v
 
 class JobPriority(IntEnum):
     """Priority levels for job processing"""
@@ -185,6 +202,10 @@ class Job(BaseModelWithTimestamps):
         description="Name of the audio/video file",
         example="meeting-2024-02-21.mp4"
     )
+    options: TranscriptionOptions = Field(
+        default_factory=TranscriptionOptions,
+        description="Transcription configuration options"
+    )
     file_size: int = Field(
         ...,
         description="Size of the file in bytes",
@@ -241,10 +262,47 @@ class Job(BaseModelWithTimestamps):
         default=None,
         description="Timestamp when job was cancelled"
     )
+    estimated_time: Optional[float] = Field(
+        default=None,
+        description="Estimated processing time in seconds",
+        ge=0.0,
+        example=300.0
+    )
+    estimated_range: Optional[tuple[float, float]] = Field(
+        default=None,
+        description="Range of estimated processing time (min, max) in seconds",
+        example=(240.0, 360.0)
+    )
+    estimate_confidence: Optional[float] = Field(
+        default=None,
+        description="Confidence level of time estimate (0-1)",
+        ge=0.0,
+        le=1.0,
+        example=0.8
+    )
     metadata: Dict = Field(
         default_factory=dict,
         description="Additional metadata about the job"
     )
+
+    @validator("estimated_range")
+    def validate_estimated_range(cls, v):
+        """Validate estimated range is valid"""
+        if v is not None:
+            if len(v) != 2:
+                raise ValueError("Estimated range must have exactly 2 values")
+            if v[0] > v[1]:
+                raise ValueError("Minimum estimate must be less than maximum")
+            if v[0] < 0 or v[1] < 0:
+                raise ValueError("Estimates must be non-negative")
+        return v
+
+    @validator("estimate_confidence")
+    def validate_estimate_confidence(cls, v):
+        """Validate estimate confidence is between 0 and 1"""
+        if v is not None and (v < 0 or v > 1):
+            raise ValueError("Estimate confidence must be between 0 and 1")
+        return v
 
     @validator("priority")
     def validate_priority(cls, v):
@@ -377,6 +435,7 @@ class JobFilter(BaseModel):
     created_before: Optional[datetime] = None
     file_name: Optional[str] = None
     retry_count: Optional[int] = None
+    language: Optional[str] = None
 
     def apply(self, jobs: List[Job]) -> List[Job]:
         """Apply filter to jobs"""
@@ -402,6 +461,9 @@ class JobFilter(BaseModel):
             
         if self.retry_count is not None:
             filtered = [j for j in filtered if j.retry_count == self.retry_count]
+            
+        if self.language:
+            filtered = [j for j in filtered if j.options.language == self.language]
             
         return filtered
 

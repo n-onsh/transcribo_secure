@@ -10,10 +10,10 @@ import uuid
 import os
 from typing import Dict, List
 from prometheus_client import make_asgi_app, Gauge
-from opentelemetry import trace, metrics, logs
+from opentelemetry import trace, metrics
 from opentelemetry.trace import Status, StatusCode
-from opentelemetry.logs import LogRecord, LogRecordProcessor, Severity
-from .routes import files, jobs, transcriber, auth, keys
+from opentelemetry.sdk.trace import Span
+from .routes import files, jobs, transcriber, auth, keys, zip
 from .services.provider import ServiceProvider
 from .services.interfaces import (
     DatabaseInterface,
@@ -48,8 +48,8 @@ SYSTEM_DISK_USAGE = Gauge(
     ['type']  # used/total
 )
 
-# Get OpenTelemetry logger
-logger = logs.get_logger(__name__)
+# Create tracer for logging
+tracer = trace.get_tracer(__name__)
 
 # Global auth handler
 auth_handler = None
@@ -67,40 +67,28 @@ service_provider = ServiceProvider()
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the FastAPI application"""
     try:
-        logger.emit(
-            "Starting service initialization...",
-            severity=Severity.WARN
-        )
+        with tracer.start_as_current_span("service_initialization") as span:
+            span.set_attribute("status", "starting")
 
         # Initialize auth handler
         try:
             global auth_handler
             auth_handler = AuthMiddleware()
-            logger.emit(
-                "Auth handler initialized",
-                severity=Severity.WARN
-            )
+            span.set_attribute("auth_handler", "initialized")
         except Exception as auth_error:
-            logger.emit(
-                "Auth handler initialization failed",
-                severity=Severity.ERROR,
-                attributes={"error": str(auth_error)}
-            )
+            span.set_attribute("auth_handler", "failed")
+            span.set_attribute("error", str(auth_error))
+            span.set_status(Status(StatusCode.ERROR))
             raise
 
         # Initialize all services
         try:
             await service_provider.initialize()
-            logger.emit(
-                "Service provider initialized",
-                severity=Severity.WARN
-            )
+            span.set_attribute("service_provider", "initialized")
         except Exception as e:
-            logger.emit(
-                "Service provider initialization failed",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            span.set_attribute("service_provider", "failed")
+            span.set_attribute("error", str(e))
+            span.set_status(Status(StatusCode.ERROR))
             raise
 
         # Initialize metrics
@@ -117,11 +105,9 @@ async def lifespan(app: FastAPI):
                 bucket_size = await storage.get_bucket_size(bucket)
                 update_gauge(STORAGE_BYTES, bucket_size, {"bucket": bucket})
         except Exception as metrics_error:
-            logger.emit(
-                "Metrics initialization failed",
-                severity=Severity.ERROR,
-                attributes={"error": str(metrics_error)}
-            )
+            span.set_attribute("metrics", "failed")
+            span.set_attribute("error", str(metrics_error))
+            span.set_status(Status(StatusCode.ERROR))
             raise
 
         # Start background tasks
@@ -129,11 +115,9 @@ async def lifespan(app: FastAPI):
             metrics_update_task = asyncio.create_task(update_metrics_periodically())
             system_metrics_task = asyncio.create_task(update_system_metrics_periodically())
         except Exception as task_error:
-            logger.emit(
-                "Failed to create background tasks",
-                severity=Severity.ERROR,
-                attributes={"error": str(task_error)}
-            )
+            span.set_attribute("background_tasks", "failed")
+            span.set_attribute("error", str(task_error))
+            span.set_status(Status(StatusCode.ERROR))
             raise
 
         yield
@@ -147,25 +131,18 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         except Exception as cancel_error:
-            logger.emit(
-                "Error cancelling background tasks",
-                severity=Severity.ERROR,
-                attributes={"error": str(cancel_error)}
-            )
+            span.set_attribute("background_tasks_cleanup", "failed")
+            span.set_attribute("error", str(cancel_error))
+            span.set_status(Status(StatusCode.ERROR))
 
         # Clean up services
         await service_provider.cleanup()
-        logger.emit(
-            "Backend services stopped",
-            severity=Severity.WARN
-        )
+        span.set_attribute("status", "stopped")
 
     except Exception as e:
-        logger.emit(
-            "Startup/shutdown error",
-            severity=Severity.ERROR,
-            attributes={"error": str(e)}
-        )
+        span.set_attribute("status", "error")
+        span.set_attribute("error", str(e))
+        span.set_status(Status(StatusCode.ERROR))
         raise
 
 async def update_metrics_periodically():
@@ -190,11 +167,9 @@ async def update_metrics_periodically():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.emit(
-                "Error updating metrics",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            with tracer.start_as_current_span("update_metrics_error") as span:
+                span.set_attribute("error", str(e))
+                span.set_status(Status(StatusCode.ERROR))
             await asyncio.sleep(10)  # Back off on error
 
 async def update_system_metrics_periodically():
@@ -220,11 +195,9 @@ async def update_system_metrics_periodically():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.emit(
-                "Error updating system metrics",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            with tracer.start_as_current_span("update_system_metrics_error") as span:
+                span.set_attribute("error", str(e))
+                span.set_status(Status(StatusCode.ERROR))
             await asyncio.sleep(5)  # Back off on error
 
 async def check_service_health() -> Dict[str, Dict]:
@@ -430,28 +403,15 @@ async def logging_middleware(request: Request, call_next):
 
         # Only log non-200 responses or slow requests
         if response.status_code != 200 or duration > 1.0:
-            logger.emit(
-                f"{request.method} {request.url.path}",
-                severity=Severity.INFO,
-                attributes={
-                    **ctx,
-                    "status": response.status_code,
-                    "duration": duration
-                }
-            )
+            span.set_attribute("status_code", response.status_code)
+            span.set_attribute("duration", duration)
 
         return response
     except Exception as e:
         duration = time.time() - start_time
-        logger.emit(
-            f"{request.method} {request.url.path}",
-            severity=Severity.ERROR,
-            attributes={
-                **ctx,
-                "error": str(e),
-                "duration": duration
-            }
-        )
+        span.set_attribute("error", str(e))
+        span.set_attribute("duration", duration)
+        span.set_status(Status(StatusCode.ERROR))
         raise
 
 # Configure CORS with security settings
@@ -511,6 +471,12 @@ app.include_router(
 app.include_router(
     keys.router,
     prefix="/api/v1",
+    dependencies=[Depends(auth_dependency), Depends(get_current_user)]
+)
+
+app.include_router(
+    zip.router,
+    prefix="/api/v1/zip",
     dependencies=[Depends(auth_dependency), Depends(get_current_user)]
 )
 

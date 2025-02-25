@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Upload</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .tooltip-icon {
+            cursor: help;
+            color: #6c757d;
+            margin-left: 0.5rem;
+        }
+        .tooltip-icon:hover {
+            color: #495057;
+        }
+        .language-description {
+            font-size: 0.875rem;
+            color: #6c757d;
+            margin-top: 0.25rem;
+        }
+        .file-type-info {
+            font-size: 0.875rem;
+            color: #6c757d;
+            margin-bottom: 1rem;
+        }
+        .progress {
+            height: 1.5rem;
+        }
+        .progress-label {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            line-height: 1.5rem;
+            color: white;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        .validation-error {
+            color: #dc3545;
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+        .drag-area {
+            border: 2px dashed #dee2e6;
+            border-radius: 0.5rem;
+            padding: 2rem;
+            text-align: center;
+            transition: border-color 0.3s;
+        }
+        .drag-area.dragover {
+            border-color: #0d6efd;
+            background-color: rgba(13, 110, 253, 0.05);
+        }
+        .file-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .file-item {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .file-item:last-child {
+            border-bottom: none;
+        }
+        .file-name {
+            flex-grow: 1;
+            margin-right: 1rem;
+        }
+        .file-size {
+            color: #6c757d;
+            margin-right: 1rem;
+        }
+        .remove-file {
+            color: #dc3545;
+            cursor: pointer;
+        }
+        .remove-file:hover {
+            color: #b02a37;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">Upload Audio Files</h5>
+                    </div>
+                    <div class="card-body">
+                        <!-- Language Selection -->
+                        <div class="mb-4">
+                            <label class="form-label">
+                                Language
+                                <i class="bi bi-question-circle tooltip-icon"
+                                   data-bs-toggle="tooltip"
+                                   data-bs-placement="right"
+                                   title="{{ help_texts.language }}"></i>
+                            </label>
+                            <select class="form-select" id="language-select">
+                                {% for lang in languages %}
+                                <option value="{{ lang.code }}"
+                                        {% if lang.code == selected_language %}selected{% endif %}>
+                                    {{ lang.name }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                            <div class="language-description" id="language-description"></div>
+                        </div>
+
+                        <!-- File Type Info -->
+                        <div class="file-type-info">
+                            <strong>Supported file types:</strong>
+                            <i class="bi bi-question-circle tooltip-icon"
+                               data-bs-toggle="tooltip"
+                               data-bs-placement="right"
+                               title="{{ help_texts.file_types }}"></i>
+                            <br>
+                            {% for type in file_types %}
+                            <span class="badge bg-secondary me-2">{{ type.extension }}</span>
+                            {% endfor %}
+                        </div>
+
+                        <!-- Upload Area -->
+                        <div class="drag-area mb-4" id="drop-zone">
+                            <i class="bi bi-cloud-upload display-4 mb-3"></i>
+                            <p class="mb-2">Drag and drop files here or</p>
+                            <button class="btn btn-primary" id="file-select-btn">
+                                Select Files
+                            </button>
+                            <input type="file" id="file-input" multiple style="display: none">
+                        </div>
+
+                        <!-- File List -->
+                        <div class="file-list mb-4" id="file-list"></div>
+
+                        <!-- Upload Progress -->
+                        <div class="progress mb-3" style="display: none" id="progress-bar">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                 role="progressbar"
+                                 style="width: 0%"></div>
+                            <div class="progress-label">0%</div>
+                        </div>
+
+                        <!-- Validation Errors -->
+                        <div class="validation-error" id="validation-errors"></div>
+
+                        <!-- Upload Button -->
+                        <button class="btn btn-success w-100" id="upload-btn" disabled>
+                            Start Upload
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Initialize tooltips
+        const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+        const tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
+            return new bootstrap.Tooltip(tooltipTriggerEl);
+        });
+
+        // Get data from backend
+        const validationRules = JSON.parse('{{ validation|safe }}');
+        const languageData = JSON.parse('{{ languages|tojson|safe }}');
+        
+        // File list management
+        const files = new Set();
+        const fileList = document.getElementById('file-list');
+        const uploadBtn = document.getElementById('upload-btn');
+        const validationErrors = document.getElementById('validation-errors');
+        
+        // Language selection
+        const languageSelect = document.getElementById('language-select');
+        const languageDescription = document.getElementById('language-description');
+        
+        languageSelect.addEventListener('change', () => {
+            const selected = languageData.find(l => l.code === languageSelect.value);
+            if (selected) {
+                languageDescription.textContent = selected.description;
+            }
+        });
+        
+        // Trigger initial language description
+        languageSelect.dispatchEvent(new Event('change'));
+        
+        // File drag and drop
+        const dropZone = document.getElementById('drop-zone');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight(e) {
+            dropZone.classList.add('dragover');
+        }
+        
+        function unhighlight(e) {
+            dropZone.classList.remove('dragover');
+        }
+        
+        dropZone.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const droppedFiles = dt.files;
+            handleFiles(droppedFiles);
+        }
+        
+        // File selection button
+        const fileInput = document.getElementById('file-input');
+        const fileSelectBtn = document.getElementById('file-select-btn');
+        
+        fileSelectBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+        
+        fileInput.addEventListener('change', () => {
+            handleFiles(fileInput.files);
+            fileInput.value = '';
+        });
+        
+        function handleFiles(fileList) {
+            Array.from(fileList).forEach(file => {
+                const isZip = file.name.toLowerCase().endsWith('.zip');
+                const errors = validateFile(file, isZip);
+                
+                if (errors.length > 0) {
+                    showErrors(errors);
+                    return;
+                }
+                
+                files.add(file);
+                updateFileList();
+                updateUploadButton();
+            });
+        }
+        
+        function validateFile(file, isZip) {
+            const errors = [];
+            const rules = validationRules[isZip ? 'zip_file' : 'single_file'];
+            
+            if (file.size > rules.max_size) {
+                errors.push(`File ${file.name} is too large. Maximum size is ${rules.max_size / (1024 * 1024 * 1024)}GB`);
+            }
+            
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            if (!rules.types.includes(ext)) {
+                errors.push(`File ${file.name} has invalid type. Supported: ${rules.types.join(', ')}`);
+            }
+            
+            return errors;
+        }
+        
+        function showErrors(errors) {
+            validationErrors.innerHTML = errors.map(e => `<div>${e}</div>`).join('');
+            setTimeout(() => {
+                validationErrors.innerHTML = '';
+            }, 5000);
+        }
+        
+        function updateFileList() {
+            fileList.innerHTML = '';
+            files.forEach(file => {
+                const div = document.createElement('div');
+                div.className = 'file-item';
+                
+                const name = document.createElement('div');
+                name.className = 'file-name';
+                name.textContent = file.name;
+                
+                const size = document.createElement('div');
+                size.className = 'file-size';
+                size.textContent = formatSize(file.size);
+                
+                const remove = document.createElement('div');
+                remove.className = 'remove-file';
+                remove.innerHTML = '<i class="bi bi-x-circle"></i>';
+                remove.onclick = () => {
+                    files.delete(file);
+                    updateFileList();
+                    updateUploadButton();
+                };
+                
+                div.appendChild(name);
+                div.appendChild(size);
+                div.appendChild(remove);
+                fileList.appendChild(div);
+            });
+        }
+        
+        function formatSize(bytes) {
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let size = bytes;
+            let unit = 0;
+            
+            while (size >= 1024 && unit < units.length - 1) {
+                size /= 1024;
+                unit++;
+            }
+            
+            return `${size.toFixed(1)} ${units[unit]}`;
+        }
+        
+        function updateUploadButton() {
+            uploadBtn.disabled = files.size === 0;
+        }
+        
+        // Upload handling
+        uploadBtn.addEventListener('click', async () => {
+            const progressBar = document.getElementById('progress-bar');
+            const progressBarInner = progressBar.querySelector('.progress-bar');
+            const progressLabel = progressBar.querySelector('.progress-label');
+            
+            progressBar.style.display = 'block';
+            uploadBtn.disabled = true;
+            
+            try {
+                for (const file of files) {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('language', languageSelect.value);
+                    
+                    const response = await fetch(
+                        file.name.toLowerCase().endsWith('.zip') ? '/api/zip/upload' : '/api/files/upload',
+                        {
+                            method: 'POST',
+                            body: formData,
+                            headers: {
+                                'Accept': 'application/json'
+                            }
+                        }
+                    );
+                    
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Upload failed');
+                    }
+                    
+                    const progress = (Array.from(files).indexOf(file) + 1) / files.size * 100;
+                    progressBarInner.style.width = `${progress}%`;
+                    progressLabel.textContent = `${Math.round(progress)}%`;
+                }
+                
+                // Clear files after successful upload
+                files.clear();
+                updateFileList();
+                
+                // Show success message
+                validationErrors.innerHTML = '<div class="text-success">Upload completed successfully!</div>';
+                setTimeout(() => {
+                    validationErrors.innerHTML = '';
+                    progressBar.style.display = 'none';
+                }, 3000);
+                
+            } catch (error) {
+                showErrors([error.message]);
+                progressBar.style.display = 'none';
+            }
+            
+            uploadBtn.disabled = false;
+        });
+    </script>
+</body>
+</html>

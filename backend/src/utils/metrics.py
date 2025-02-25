@@ -1,221 +1,269 @@
-from opentelemetry import metrics
-import functools
-import time
-import asyncio
-from typing import Optional
+"""Metrics configuration."""
 
-# Get meter
-meter = metrics.get_meter_provider().get_meter("backend")
+from opentelemetry.metrics import get_meter
+from datetime import datetime
 
-# API Metrics
-http_request_duration = meter.create_histogram(
-    "transcribo_backend_request_duration_seconds",
-    description="HTTP request duration in seconds",
-    unit="s"
+meter = get_meter(__name__)
+
+# Storage operation metrics
+STORAGE_OPERATION_DURATION = meter.create_histogram(
+    "storage_operation_duration_seconds",
+    "Duration of storage operations",
+    ["operation_name", "bucket"]
 )
 
-http_requests_total = meter.create_counter(
-    "transcribo_backend_requests_total",
-    description="Total number of HTTP requests",
-    unit="1"
+STORAGE_BYTES = meter.create_gauge(
+    "storage_bytes",
+    "Storage usage in bytes",
+    ["bucket"]
 )
 
-http_error_requests_total = meter.create_counter(
-    "transcribo_backend_error_requests_total",
-    description="Total number of HTTP requests resulting in errors",
-    unit="1"
+# Database operation metrics
+DB_OPERATION_DURATION = meter.create_histogram(
+    "db_operation_duration_seconds",
+    "Duration of database operations",
+    ["operation"]
 )
 
-# Job Metrics
-jobs_total = meter.create_counter(
-    "transcribo_backend_jobs_total",
-    description="Total number of jobs by status",
-    unit="1"
+DB_OPERATION_ERRORS = meter.create_counter(
+    "db_operation_errors_total",
+    "Total number of database operation errors",
+    ["operation", "error_type"]
 )
 
-job_processing_duration = meter.create_histogram(
-    "transcribo_backend_job_processing_duration_seconds",
-    description="Time spent processing jobs",
-    unit="s"
+DB_CONNECTIONS = meter.create_gauge(
+    "db_connections",
+    "Number of active database connections"
 )
 
-job_queue_size = meter.create_up_down_counter(
-    "transcribo_backend_job_queue_size",
-    description="Number of jobs in queue",
-    unit="1"
+# Job metrics
+JOBS_CREATED = meter.create_counter(
+    "jobs_created_total",
+    "Total number of jobs created",
+    ["status"]
 )
 
-job_retry_count = meter.create_counter(
-    "transcribo_backend_job_retries_total",
-    description="Total number of job retries",
-    unit="1"
+JOBS_COMPLETED = meter.create_counter(
+    "jobs_completed_total",
+    "Total number of jobs completed",
+    ["status"]
 )
 
-# Storage Metrics
-storage_operation_duration = meter.create_histogram(
-    "transcribo_backend_storage_operation_duration_seconds",
-    description="Time spent on storage operations",
-    unit="s"
+JOB_PROCESSING_TIME = meter.create_histogram(
+    "job_processing_seconds",
+    "Job processing time in seconds",
+    ["language"]
 )
 
-storage_operation_errors = meter.create_counter(
-    "transcribo_backend_storage_operation_errors_total",
-    description="Total number of storage operation errors",
-    unit="1"
+JOB_QUEUE_TIME = meter.create_histogram(
+    "job_queue_seconds",
+    "Job time in queue before processing",
+    ["priority"]
 )
 
-storage_operations_total = meter.create_counter(
-    "transcribo_backend_storage_operations_total",
-    description="Total number of storage operations by type",
-    unit="1"
+# Worker metrics
+WORKER_JOBS_ACTIVE = meter.create_counter(
+    "worker_jobs_active",
+    "Number of active jobs per worker",
+    ["worker_id"]
 )
 
-# Database Metrics
-db_operation_duration = meter.create_histogram(
-    "transcribo_backend_db_operation_duration_seconds",
-    description="Time spent on database operations",
-    unit="s"
+WORKER_LOAD_PERCENT = meter.create_gauge(
+    "worker_load_percent",
+    "Worker load percentage",
+    ["worker_id"]
 )
 
-db_operation_errors = meter.create_counter(
-    "transcribo_backend_db_operation_errors_total",
-    description="Total number of database operation errors",
-    unit="1"
+WORKER_HEALTH_STATUS = meter.create_gauge(
+    "worker_health_status",
+    "Worker health status (0=failed, 1=healthy)",
+    ["worker_id"]
 )
 
-db_connections = meter.create_up_down_counter(
-    "transcribo_backend_db_connections",
-    description="Number of active database connections",
-    unit="1"
+WORKER_RECOVERY_COUNT = meter.create_counter(
+    "worker_recovery_count",
+    "Number of worker recoveries",
+    ["worker_id"]
 )
 
-# Resource Metrics
-memory_usage = meter.create_up_down_counter(
-    "transcribo_backend_memory_bytes",
-    description="Backend memory usage",
-    unit="By"
+WORKER_FAILOVER_TIME = meter.create_histogram(
+    "worker_failover_seconds",
+    "Time taken for worker failover",
+    ["worker_id"]
 )
 
-cpu_usage = meter.create_up_down_counter(
-    "transcribo_backend_cpu_usage_percent",
-    description="Backend CPU usage percentage",
-    unit="1"
+# ZIP metrics
+ZIP_EXTRACTION_TIME = meter.create_histogram(
+    "zip_extraction_seconds",
+    "Time taken to extract ZIP file",
+    ["status"]
 )
 
-def track_request(path_type: str, method: str, status_code: int, duration: float):
-    """Track HTTP request metrics"""
-    labels = {
-        "path_type": path_type,  # Use generic path type instead of actual path
-        "method": method,
-        "status": str(status_code)
-    }
-    http_requests_total.add(1, labels)
-    http_request_duration.record(duration, labels)
-    if status_code >= 400:
-        http_error_requests_total.add(1, labels)
+ZIP_FILE_COUNT = meter.create_counter(
+    "zip_files_total",
+    "Total number of files in ZIP archives",
+)
 
-def track_job(status: str):
-    """Track job status"""
-    jobs_total.add(1, {"status": status})
+ZIP_TOTAL_SIZE = meter.create_counter(
+    "zip_bytes_total",
+    "Total size of files in ZIP archives",
+)
 
-def track_job_processing(duration: float, success: bool):
-    """Track job processing duration"""
-    job_processing_duration.record(duration, {"status": "success" if success else "error"})
+ZIP_ERROR_COUNT = meter.create_counter(
+    "zip_errors_total",
+    "Total number of ZIP processing errors",
+    ["error_type"]
+)
 
-def track_job_queue(size: int):
-    """Track job queue size"""
-    job_queue_size.add(size)
+ZIP_VALIDATION_TIME = meter.create_histogram(
+    "zip_validation_seconds",
+    "Time taken to validate ZIP file",
+    ["result"]
+)
 
-def track_job_retry():
-    """Track job retry"""
-    job_retry_count.add(1)
+ZIP_CLEANUP_TIME = meter.create_histogram(
+    "zip_cleanup_seconds",
+    "Time taken to clean up after ZIP processing",
+    ["status"]
+)
 
-def track_storage_operation(operation_type: str, duration: float, success: bool):
-    """Track storage operation"""
-    labels = {
-        "operation_type": operation_type,
-        "status": "success" if success else "error"
-    }
-    storage_operations_total.add(1, labels)
-    storage_operation_duration.record(duration, labels)
-    if not success:
-        storage_operation_errors.add(1, labels)
+# Storage metrics
+STORAGE_UPLOAD_TIME = meter.create_histogram(
+    "storage_upload_seconds",
+    "Time taken to upload file to storage",
+    ["status"]
+)
 
-def track_db_operation(operation_type: str, duration: float, success: bool):
-    """Track database operation"""
-    labels = {
-        "operation_type": operation_type,
-        "status": "success" if success else "error"
-    }
-    db_operation_duration.record(duration, labels)
-    if not success:
-        db_operation_errors.add(1, labels)
+STORAGE_DOWNLOAD_TIME = meter.create_histogram(
+    "storage_download_seconds",
+    "Time taken to download file from storage",
+    ["status"]
+)
 
-def track_db_connection_change(delta: int):
-    """Track database connection changes"""
-    db_connections.add(delta)
+STORAGE_OPERATION_ERRORS = meter.create_counter(
+    "storage_errors_total",
+    "Total number of storage operation errors",
+    ["operation", "error_type"]
+)
 
-def track_resource_usage(memory: float, cpu: float):
-    """Track resource usage"""
-    memory_usage.add(memory)
-    cpu_usage.add(cpu)
+# Database metrics
+DB_QUERY_TIME = meter.create_histogram(
+    "db_query_seconds",
+    "Database query execution time",
+    ["query_type"]
+)
 
-def track_time(metric, labels: Optional[dict] = None):
-    """Decorator to track time spent in a function using a Histogram"""
+DB_CONNECTION_ERRORS = meter.create_counter(
+    "db_connection_errors_total",
+    "Total number of database connection errors",
+)
+
+DB_DEADLOCK_COUNT = meter.create_counter(
+    "db_deadlocks_total",
+    "Total number of database deadlocks",
+)
+
+# Cache metrics
+CACHE_HIT_COUNT = meter.create_counter(
+    "cache_hits_total",
+    "Total number of cache hits",
+    ["cache_type"]
+)
+
+CACHE_MISS_COUNT = meter.create_counter(
+    "cache_misses_total",
+    "Total number of cache misses",
+    ["cache_type"]
+)
+
+CACHE_EVICTION_COUNT = meter.create_counter(
+    "cache_evictions_total",
+    "Total number of cache evictions",
+    ["cache_type"]
+)
+
+# API metrics
+API_REQUEST_TIME = meter.create_histogram(
+    "api_request_seconds",
+    "API request processing time",
+    ["endpoint", "method"]
+)
+
+API_ERROR_COUNT = meter.create_counter(
+    "api_errors_total",
+    "Total number of API errors",
+    ["endpoint", "error_type"]
+)
+
+API_REQUEST_SIZE = meter.create_histogram(
+    "api_request_bytes",
+    "API request size in bytes",
+    ["endpoint"]
+)
+
+# System metrics
+SYSTEM_MEMORY_USAGE = meter.create_gauge(
+    "system_memory_bytes",
+    "System memory usage in bytes",
+    ["type"]
+)
+
+SYSTEM_CPU_USAGE = meter.create_gauge(
+    "system_cpu_percent",
+    "System CPU usage percentage",
+    ["type"]
+)
+
+SYSTEM_DISK_USAGE = meter.create_gauge(
+    "system_disk_bytes",
+    "System disk usage in bytes",
+    ["path"]
+)
+
+def track_time(name: str, labels: dict):
+    """Decorator to track execution time of a function."""
     def decorator(func):
-        @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            start_time = time.time()
+        async def wrapper(*args, **kwargs):
+            start = datetime.utcnow()
             try:
                 result = await func(*args, **kwargs)
-                duration = time.time() - start_time
-                metric.record(duration, labels)
+                duration = (datetime.utcnow() - start).total_seconds()
+                meter.create_histogram(
+                    name,
+                    "Function execution time",
+                    labels
+                ).record(duration)
                 return result
             except Exception as e:
-                duration = time.time() - start_time
-                error_labels = {**labels, "status": "error"} if labels else {"status": "error"}
-                metric.record(duration, error_labels)
-                raise e
-        
-        @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            start_time = time.time()
-            try:
-                result = func(*args, **kwargs)
-                duration = time.time() - start_time
-                metric.record(duration, labels)
-                return result
-            except Exception as e:
-                duration = time.time() - start_time
-                error_labels = {**labels, "status": "error"} if labels else {"status": "error"}
-                metric.record(duration, error_labels)
-                raise e
-                
-        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+                duration = (datetime.utcnow() - start).total_seconds()
+                meter.create_histogram(
+                    name,
+                    "Function execution time",
+                    {**labels, "error": type(e).__name__}
+                ).record(duration)
+                raise
+        return wrapper
     return decorator
 
-def track_errors(counter, labels: Optional[dict] = None):
-    """Decorator to track errors using a Counter"""
+def track_errors(name: str, labels: dict):
+    """Decorator to track errors in a function."""
     def decorator(func):
-        @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
             except Exception as e:
-                error_labels = labels.copy() if labels else {}
-                error_labels["error_type"] = e.__class__.__name__
-                counter.add(1, error_labels)
+                meter.create_counter(
+                    name,
+                    "Function error count",
+                    {**labels, "error": type(e).__name__}
+                ).inc()
                 raise
-        
-        @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                error_labels = labels.copy() if labels else {}
-                error_labels["error_type"] = e.__class__.__name__
-                counter.add(1, error_labels)
-                raise
-                
-        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+        return wrapper
     return decorator
+
+def update_gauge(gauge, value: float, labels: dict = None):
+    """Update a gauge metric."""
+    if labels:
+        gauge.set(value, labels)
+    else:
+        gauge.set(value)

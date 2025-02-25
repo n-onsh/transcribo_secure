@@ -38,16 +38,30 @@ class APIService:
             "Accept": "application/json"
         }
 
-    async def upload_file(self, file: BinaryIO, file_name: str) -> Dict:
-        """Upload file with authentication"""
+    async def upload_file(
+        self,
+        file: BinaryIO,
+        file_name: str,
+        language: Optional[str] = None,
+        vocabulary: Optional[List[str]] = None
+    ) -> Dict:
+        """Upload file with authentication and language selection"""
         try:
             headers = await self._get_headers()
             files = {"file": (file_name, file)}
             
+            # Add language and vocabulary params
+            params = {}
+            if language:
+                params["language"] = language
+            if vocabulary:
+                params["vocabulary"] = ",".join(vocabulary)
+            
             response = await self._client.post(
                 f"{self.base_url}/files/",
                 headers=headers,
-                files=files
+                files=files,
+                params=params
             )
             response.raise_for_status()
             return response.json()
@@ -62,14 +76,20 @@ class APIService:
             logger.error(f"File upload failed: {str(e)}")
             raise
 
-    async def get_jobs(self) -> List[Dict]:
-        """Get user's jobs with authentication"""
+    async def get_jobs(self, language: Optional[str] = None) -> List[Dict]:
+        """Get user's jobs with authentication and optional language filter"""
         try:
             headers = await self._get_headers()
             
+            # Add language filter
+            params = {}
+            if language:
+                params["language"] = language
+            
             response = await self._client.get(
                 f"{self.base_url}/jobs/",
-                headers=headers
+                headers=headers,
+                params=params
             )
             response.raise_for_status()
             return response.json()

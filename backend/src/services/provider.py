@@ -1,21 +1,22 @@
 from typing import Dict, Optional, Type, TypeVar
-from opentelemetry import trace, logs
-from opentelemetry.logs import Severity
+from opentelemetry import trace
+from ..utils.logging import log_info, log_error
 from .interfaces import (
     StorageInterface,
     JobManagerInterface,
     DatabaseInterface,
     KeyManagementInterface,
-    EncryptionInterface
+    EncryptionInterface,
+    ZipHandlerInterface
 )
 from .storage import StorageService
 from .database import DatabaseService
 from .job_manager import JobManager
 from .key_management import KeyManagementService
 from .encryption import EncryptionService
+from .zip_handler import ZipHandler
 from ..utils.metrics import track_time, DB_OPERATION_DURATION
 
-logger = logs.get_logger(__name__)
 
 T = TypeVar('T')
 
@@ -26,10 +27,7 @@ class ServiceProvider:
         """Initialize service provider"""
         self._services: Dict[Type, object] = {}
         self._initialized = False
-        logger.emit(
-            "Service provider initialized",
-            severity=Severity.INFO
-        )
+        log_info("Service provider initialized")
 
     @track_time(DB_OPERATION_DURATION, {"operation": "initialize_services"})
     async def initialize(self):
@@ -53,25 +51,21 @@ class ServiceProvider:
             storage = await self._init_storage(db, encryption)
             self._services[StorageInterface] = storage
 
-            # Initialize job manager last
+            # Initialize job manager
             job_manager = await self._init_job_manager(db, storage)
             self._services[JobManagerInterface] = job_manager
 
+            # Initialize ZIP handler
+            zip_handler = await self._init_zip_handler(storage, job_manager)
+            self._services[ZipHandlerInterface] = zip_handler
+
             self._initialized = True
-            logger.emit(
-                "All services initialized",
-                severity=Severity.INFO,
-                attributes={
-                    "services": list(self._services.keys())
-                }
-            )
+            log_info("All services initialized", {
+                "services": list(self._services.keys())
+            })
 
         except Exception as e:
-            logger.emit(
-                "Failed to initialize services",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Failed to initialize services", {"error": str(e)})
             await self.cleanup()
             raise
 
@@ -80,6 +74,7 @@ class ServiceProvider:
         try:
             # Clean up services in reverse initialization order
             for service_type in [
+                ZipHandlerInterface,
                 JobManagerInterface,
                 StorageInterface,
                 EncryptionInterface,
@@ -94,25 +89,14 @@ class ServiceProvider:
                         elif hasattr(service, 'cleanup'):
                             await service.cleanup()
                     except Exception as e:
-                        logger.emit(
-                            f"Error cleaning up {service_type.__name__}",
-                            severity=Severity.ERROR,
-                            attributes={"error": str(e)}
-                        )
+                        log_error(f"Error cleaning up {service_type.__name__}", {"error": str(e)})
 
             self._services.clear()
             self._initialized = False
-            logger.emit(
-                "Services cleaned up",
-                severity=Severity.INFO
-            )
+            log_info("Services cleaned up")
 
         except Exception as e:
-            logger.emit(
-                "Error in cleanup process",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Error in cleanup process", {"error": str(e)})
             raise
 
     def get(self, service_type: Type[T]) -> Optional[T]:
@@ -128,11 +112,7 @@ class ServiceProvider:
             await db.initialize_database()
             return db
         except Exception as e:
-            logger.emit(
-                "Failed to initialize database",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Failed to initialize database", {"error": str(e)})
             raise
 
     async def _init_key_management(self) -> KeyManagementInterface:
@@ -142,11 +122,7 @@ class ServiceProvider:
             # No async initialization needed
             return key_mgmt
         except Exception as e:
-            logger.emit(
-                "Failed to initialize key management",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Failed to initialize key management", {"error": str(e)})
             raise
 
     async def _init_encryption(
@@ -159,11 +135,7 @@ class ServiceProvider:
             # No async initialization needed
             return encryption
         except Exception as e:
-            logger.emit(
-                "Failed to initialize encryption",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Failed to initialize encryption", {"error": str(e)})
             raise
 
     async def _init_storage(
@@ -180,11 +152,7 @@ class ServiceProvider:
             await storage._init_buckets()
             return storage
         except Exception as e:
-            logger.emit(
-                "Failed to initialize storage",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error("Failed to initialize storage", {"error": str(e)})
             raise
 
     async def _init_job_manager(
@@ -201,9 +169,22 @@ class ServiceProvider:
             await job_manager.start()
             return job_manager
         except Exception as e:
-            logger.emit(
-                "Failed to initialize job manager",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
+            log_error("Failed to initialize job manager", {"error": str(e)})
+            raise
+
+    async def _init_zip_handler(
+        self,
+        storage: StorageInterface,
+        job_manager: JobManagerInterface
+    ) -> ZipHandlerInterface:
+        """Initialize ZIP handler service"""
+        try:
+            zip_handler = ZipHandler(
+                storage=storage,
+                job_manager=job_manager
             )
+            # No async initialization needed
+            return zip_handler
+        except Exception as e:
+            log_error("Failed to initialize ZIP handler", {"error": str(e)})
             raise

@@ -1,15 +1,14 @@
 import os
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
-from opentelemetry import trace, logs
-from opentelemetry.logs import Severity
 from typing import List, Optional, Dict, Any
+from ..utils.logging import tracer, log_error
 from ..models.file import FileResponse
+from ..models.job import TranscriptionOptions
 from ..services.interfaces import StorageInterface, JobManagerInterface
 from ..services.provider import service_provider
 from ..utils.exceptions import ResourceNotFoundError, AuthorizationError
 from ..utils.metrics import track_time, track_errors, DB_OPERATION_DURATION
 
-logger = logs.get_logger(__name__)
 
 router = APIRouter(
     prefix="/files",
@@ -26,6 +25,8 @@ router = APIRouter(
 @track_time(DB_OPERATION_DURATION, {"operation": "upload_file"})
 async def upload_file(
     file: UploadFile = File(...),
+    language: Optional[str] = None,
+    vocabulary: Optional[str] = None,
     user_id: str = None  # Set by auth middleware
 ):
     """Upload a file for transcription with progress tracking"""
@@ -45,12 +46,19 @@ async def upload_file(
         if ext not in allowed_types:
             raise ValueError(f"Invalid file type. Allowed types: {', '.join(allowed_types)}")
 
+        # Create transcription options
+        options = TranscriptionOptions(
+            language=language,
+            vocabulary=vocabulary.split(",") if vocabulary else []
+        )
+
         # Create transcription job with streaming upload
         try:
             job = await job_manager.create_job(
                 user_id=user_id,
                 file_data=file.file,  # Pass file object directly for streaming
-                file_name=file.filename
+                file_name=file.filename,
+                options=options
             )
         except ValueError as e:
             raise HTTPException(
@@ -63,7 +71,9 @@ async def upload_file(
             name=file.filename,
             status=job.status,
             created_at=job.created_at,
-            progress=job.progress
+            progress=job.progress,
+            language=job.options.language,
+            supported_languages=job.options.supported_languages
         )
 
     except ValueError as e:
@@ -77,15 +87,11 @@ async def upload_file(
             detail=f"File upload failed: {str(e)}"
         )
     except Exception as e:
-        logger.emit(
-            "Upload failed",
-            severity=Severity.ERROR,
-            attributes={
-                "error": str(e),
-                "file_name": file.filename,
-                "user_id": user_id
-            }
-        )
+        log_error("Upload failed", {
+            "error": str(e),
+            "file_name": file.filename,
+            "user_id": user_id
+        })
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unexpected error during upload"
@@ -152,7 +158,8 @@ async def get_file(
 async def list_files(
     user_id: str = None,  # Set by auth middleware
     limit: Optional[int] = 100,
-    offset: Optional[int] = 0
+    offset: Optional[int] = 0,
+    language: Optional[str] = None
 ):
     """List files for a user"""
     try:
@@ -164,11 +171,12 @@ async def list_files(
                 detail="Service unavailable"
             )
 
-        # Get jobs
+        # Get jobs with language filter
         jobs = await job_manager.list_jobs(
             user_id=user_id,
             limit=limit,
-            offset=offset
+            offset=offset,
+            language=language
         )
 
         return [
@@ -178,7 +186,9 @@ async def list_files(
                 status=job.status,
                 created_at=job.created_at,
                 completed_at=job.completed_at,
-                error=job.error
+                error=job.error,
+                language=job.options.language,
+                supported_languages=job.options.supported_languages
             )
             for job in jobs
         ]

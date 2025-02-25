@@ -136,6 +136,7 @@ class JobManager:
         user_id: str,
         file_data: BinaryIO,
         file_name: str,
+        options: Optional[TranscriptionOptions] = None,
         priority: JobPriority = JobPriority.NORMAL,
         max_retries: Optional[int] = None
     ) -> Job:
@@ -146,13 +147,29 @@ class JobManager:
             file_size = file_data.tell()
             file_data.seek(0)  # Reset to start
             
+            # Get time estimate from transcriber
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.transcriber_url}/estimate",
+                    params={
+                        "duration": file_size / 16000,  # Rough estimate based on audio format
+                        "language": options.language if options else "de"
+                    }
+                )
+                response.raise_for_status()
+                estimate = response.json()
+
             # Create job record
             job = Job(
                 user_id=user_id,
                 file_name=file_name,
                 file_size=file_size,
                 priority=priority,
-                max_retries=max_retries or self.max_retries
+                max_retries=max_retries or self.max_retries,
+                options=options or TranscriptionOptions(),
+                estimated_time=estimate["estimated_time"],
+                estimated_range=(estimate["range"][0], estimate["range"][1]),
+                estimate_confidence=estimate["confidence"]
             )
             
             # Create progress callback
@@ -227,11 +244,16 @@ class JobManager:
         user_id: Optional[str] = None,
         status: Optional[JobStatus] = None,
         limit: Optional[int] = None,
-        offset: Optional[int] = None
+        offset: Optional[int] = None,
+        language: Optional[str] = None
     ) -> List[Job]:
         """List jobs with filtering"""
         try:
-            filter = JobFilter(user_id=user_id, status=status)
+            filter = JobFilter(
+                user_id=user_id,
+                status=status,
+                language=language
+            )
             return await self.db.list_jobs(
                 filter=filter,
                 limit=limit,
@@ -473,33 +495,55 @@ class JobManager:
                     # Write to temp file
                     with open(temp_path, 'wb') as f:
                         f.write(audio_data)
-                    
-                    # Submit job to transcriber service
-                    async with httpx.AsyncClient() as client:
-                        # Upload audio file to transcriber with streaming
-                        with open(temp_path, 'rb') as f:
-                            response = await client.post(
-                                f"{self.transcriber_url}/transcribe",
-                                files={"audio": f},
-                                params={"job_id": job.id},
-                                timeout=None  # No timeout for large files
-                            )
-                            response.raise_for_status()
-                            
-                        # Get transcription result
-                        transcription = response.json()
-                        
-                        # Store transcription
-                        await self.storage.store_file(
-                            user_id=job.user_id,
-                            data=json.dumps(transcription).encode(),
-                            file_name=f"{job.id}.json",
-                            bucket_type="transcription"
-                        )
-                            
-                finally:
-                    # Clean up temp file
+                except Exception as e:
                     os.unlink(temp_path)
+                    raise
+                    
+            # Get transcriber performance stats
+            async with httpx.AsyncClient() as client:
+                stats_response = await client.get(f"{self.transcriber_url}/stats")
+                stats_response.raise_for_status()
+                stats = stats_response.json()
+                
+                # Adjust timeout based on stats
+                timeout = max(
+                    job.estimated_time * 1.5,  # Base timeout
+                    job.estimated_range[1] * 1.2  # Upper range with buffer
+                )
+
+            # Submit job to transcriber service
+            async with httpx.AsyncClient() as client:
+                # Upload audio file to transcriber with streaming
+                with open(temp_path, 'rb') as f:
+                    # Prepare transcription parameters
+                    params = {
+                        "job_id": job.id,
+                        "language": job.options.language,
+                        "vocabulary": ",".join(job.options.vocabulary) if job.options.vocabulary else None
+                    }
+                    
+                    # Submit to transcriber with dynamic timeout
+                    response = await client.post(
+                        f"{self.transcriber_url}/transcribe",
+                        files={"audio": f},
+                        params=params,
+                        timeout=timeout
+                    )
+                    response.raise_for_status()
+                    
+                    # Get transcription result
+                    transcription = response.json()
+                    
+                    # Store transcription
+                    await self.storage.store_file(
+                        user_id=job.user_id,
+                        data=json.dumps(transcription).encode(),
+                        file_name=f"{job.id}.json",
+                        bucket_type="transcription"
+                    )
+                
+            # Clean up temp file
+            os.unlink(temp_path)
             
             # Mark complete
             job.complete()

@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>About - Transcribo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .about-section {
+            background-color: #fff;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        .about-section h5 {
+            color: #0d6efd;
+            margin-bottom: 1rem;
+        }
+        .feature-icon {
+            font-size: 2rem;
+            color: #0d6efd;
+            margin-bottom: 1rem;
+        }
+        .tech-badge {
+            background-color: #e9ecef;
+            color: #495057;
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            margin: 0.25rem;
+            display: inline-block;
+        }
+        .tech-badge i {
+            margin-right: 0.5rem;
+        }
+        .stats-box {
+            text-align: center;
+            padding: 1.5rem;
+            background-color: #f8f9fa;
+            border-radius: 0.5rem;
+        }
+        .stats-number {
+            font-size: 2rem;
+            font-weight: 600;
+            color: #0d6efd;
+            margin-bottom: 0.5rem;
+        }
+        .stats-label {
+            color: #6c757d;
+            font-size: 0.875rem;
+        }
+        .timeline {
+            position: relative;
+            padding-left: 2rem;
+        }
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background-color: #dee2e6;
+        }
+        .timeline-item {
+            position: relative;
+            padding-bottom: 2rem;
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -2rem;
+            top: 0.5rem;
+            width: 1rem;
+            height: 1rem;
+            background-color: #0d6efd;
+            border-radius: 50%;
+        }
+        .timeline-date {
+            font-size: 0.875rem;
+            color: #6c757d;
+            margin-bottom: 0.25rem;
+        }
+        .timeline-title {
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">Transcribo</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/upload">Upload</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/jobs">Jobs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/settings">Settings</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/help">Help</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Content -->
+    <div class="container mt-4">
+        <!-- Overview -->
+        <div class="about-section">
+            <h5>
+                <i class="bi bi-info-circle me-2"></i>
+                About Transcribo
+            </h5>
+            <p class="lead">
+                Transcribo is a secure, high-performance audio transcription service designed for multilingual content.
+                Built with privacy and accuracy in mind, it provides enterprise-grade transcription capabilities with
+                support for multiple languages and batch processing.
+            </p>
+        </div>
+
+        <!-- Key Features -->
+        <div class="about-section">
+            <h5>
+                <i class="bi bi-stars me-2"></i>
+                Key Features
+            </h5>
+            <div class="row g-4">
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <i class="bi bi-shield-check feature-icon"></i>
+                        <h6>Secure Processing</h6>
+                        <p class="text-muted">End-to-end encryption and secure file handling</p>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <i class="bi bi-translate feature-icon"></i>
+                        <h6>Multilingual Support</h6>
+                        <p class="text-muted">Support for German, English, French, and Italian</p>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <i class="bi bi-speedometer2 feature-icon"></i>
+                        <h6>High Performance</h6>
+                        <p class="text-muted">Distributed processing for faster results</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Technology Stack -->
+        <div class="about-section">
+            <h5>
+                <i class="bi bi-code-slash me-2"></i>
+                Technology Stack
+            </h5>
+            <div class="mb-3">
+                <span class="tech-badge"><i class="bi bi-filetype-py"></i>Python</span>
+                <span class="tech-badge"><i class="bi bi-lightning"></i>FastAPI</span>
+                <span class="tech-badge"><i class="bi bi-database"></i>PostgreSQL</span>
+                <span class="tech-badge"><i class="bi bi-hdd-rack"></i>MinIO</span>
+                <span class="tech-badge"><i class="bi bi-box"></i>Docker</span>
+                <span class="tech-badge"><i class="bi bi-graph-up"></i>OpenTelemetry</span>
+                <span class="tech-badge"><i class="bi bi-shield"></i>Azure KeyVault</span>
+                <span class="tech-badge"><i class="bi bi-cpu"></i>HuggingFace</span>
+            </div>
+        </div>
+
+        <!-- System Stats -->
+        <div class="about-section">
+            <h5>
+                <i class="bi bi-graph-up me-2"></i>
+                System Statistics
+            </h5>
+            <div class="row g-4">
+                <div class="col-md-3">
+                    <div class="stats-box">
+                        <div class="stats-number" id="files-processed">0</div>
+                        <div class="stats-label">Files Processed</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stats-box">
+                        <div class="stats-number" id="hours-transcribed">0</div>
+                        <div class="stats-label">Hours Transcribed</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stats-box">
+                        <div class="stats-number" id="active-users">0</div>
+                        <div class="stats-label">Active Users</div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stats-box">
+                        <div class="stats-number" id="system-uptime">0</div>
+                        <div class="stats-label">Days Uptime</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Development Timeline -->
+        <div class="about-section">
+            <h5>
+                <i class="bi bi-clock-history me-2"></i>
+                Development Timeline
+            </h5>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <div class="timeline-date">February 2025</div>
+                    <div class="timeline-title">ZIP File Support</div>
+                    <div class="timeline-content">
+                        Added support for batch processing through ZIP archives
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">January 2025</div>
+                    <div class="timeline-title">Time Estimation</div>
+                    <div class="timeline-content">
+                        Implemented ML-based processing time estimation
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">December 2024</div>
+                    <div class="timeline-title">Fault Tolerance</div>
+                    <div class="timeline-content">
+                        Enhanced system reliability with fault detection and recovery
+                    </div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-date">November 2024</div>
+                    <div class="timeline-title">Initial Release</div>
+                    <div class="timeline-content">
+                        First production deployment with core transcription features
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Health -->
+        <div class="about-section">
+            <h5>
+                <i class="bi bi-heart-pulse me-2"></i>
+                System Health
+            </h5>
+            <div class="row g-4">
+                <div class="col-md-3">
+                    <div class="stats-box">
+                        <div id="system-status" class="text-success">
+                            <i class="bi bi-check-circle"></i>
+                            Operational
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stats-box">
+                        <div id="job-queue" class="text-success">
+                            <i class="bi bi-check-circle"></i>
+                            Queue Normal
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stats-box">
+                        <div id="storage-status" class="text-success">
+                            <i class="bi bi-check-circle"></i>
+                            Storage OK
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stats-box">
+                        <div id="api-status" class="text-success">
+                            <i class="bi bi-check-circle"></i>
+                            API Healthy
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Load system stats
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+
+                // Update stats
+                document.getElementById('files-processed').textContent = stats.files_processed.toLocaleString();
+                document.getElementById('hours-transcribed').textContent = stats.hours_transcribed.toLocaleString();
+                document.getElementById('active-users').textContent = stats.active_users.toLocaleString();
+                document.getElementById('system-uptime').textContent = stats.uptime_days;
+
+                // Update health status
+                updateHealth(stats.health);
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        // Update health indicators
+        function updateHealth(health) {
+            const components = ['system-status', 'job-queue', 'storage-status', 'api-status'];
+            components.forEach(id => {
+                const element = document.getElementById(id);
+                const status = health[id.replace('-', '_')];
+                
+                element.className = status === 'healthy' ? 'text-success' : 'text-danger';
+                element.innerHTML = `
+                    <i class="bi bi-${status === 'healthy' ? 'check' : 'x'}-circle"></i>
+                    ${status === 'healthy' ? 'Operational' : 'Issues Detected'}
+                `;
+            });
+        }
+
+        // Initial load
+        loadStats();
+
+        // Refresh every minute
+        setInterval(loadStats, 60000);
+    </script>
+</body>
+</html>

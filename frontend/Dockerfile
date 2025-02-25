@@ -1,52 +1,35 @@
-FROM python:3.10-slim
+# Use Python 3.11 slim image
+FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update -qq && \
-    apt-get install -y -qq --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     build-essential \
-    curl \
-    ffmpeg \
-    git \
-    libmagic1 \
-    > /dev/null 2>&1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies first for better caching
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt --quiet
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source code
+COPY src/ src/
+
+# Create static files directory
+RUN mkdir -p src/static
 
 # Create necessary directories
-RUN mkdir -p /app/static /app/data /app/data/in /app/data/out /app/data/error /app/data/worker
+RUN mkdir -p src/templates
 
-# Copy application code
-COPY . .
-
-# Set permissions
-RUN chmod -R 755 /app/static /app/data
-
-# Environment variables
+# Set environment variables
 ENV PYTHONPATH=/app
-ENV STATIC_PATH=/app/static
-ENV STORAGE_SECRET=${STORAGE_SECRET}
-ENV BACKEND_API_URL=${BACKEND_API_URL}
-ENV REFRESH_INTERVAL=${REFRESH_INTERVAL}
-ENV MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE}
-ENV ENVIRONMENT=production
-
-# OpenTelemetry configuration
-ENV OTEL_RESOURCE_ATTRIBUTES=service.name=transcribo-frontend
-ENV OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-ENV OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-ENV OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8501/health || exit 1
+ENV PYTHONUNBUFFERED=1
 
 # Expose port
-EXPOSE 8501
+EXPOSE 8000
 
-# Set entrypoint with proper module execution
-ENTRYPOINT ["python", "-m", "src.main"]
+# Run the application
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

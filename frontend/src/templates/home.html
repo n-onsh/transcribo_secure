@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcribo - Audio Transcription</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .feature-icon {
+            font-size: 2rem;
+            color: #0d6efd;
+            margin-bottom: 1rem;
+        }
+        .feature-card {
+            transition: transform 0.3s;
+        }
+        .feature-card:hover {
+            transform: translateY(-5px);
+        }
+        .hero-section {
+            background: linear-gradient(135deg, #0d6efd 0%, #0099ff 100%);
+            color: white;
+            padding: 4rem 0;
+        }
+        .nav-link {
+            color: rgba(255,255,255,0.8);
+            transition: color 0.3s;
+        }
+        .nav-link:hover {
+            color: white;
+        }
+        .btn-get-started {
+            padding: 0.75rem 2rem;
+            font-size: 1.1rem;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">Transcribo</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/upload">Upload</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/jobs">Jobs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/settings">Settings</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/help">Help</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero-section">
+        <div class="container text-center">
+            <h1 class="display-4 mb-4">Audio Transcription Made Easy</h1>
+            <p class="lead mb-5">
+                Convert your audio files to text with high accuracy using our advanced transcription service.
+                Support for multiple languages and file formats.
+            </p>
+            <a href="/upload" class="btn btn-light btn-get-started">
+                Get Started
+                <i class="bi bi-arrow-right ms-2"></i>
+            </a>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="py-5">
+        <div class="container">
+            <div class="row g-4">
+                <!-- Multiple Languages -->
+                <div class="col-md-4">
+                    <div class="card h-100 feature-card">
+                        <div class="card-body text-center">
+                            <i class="bi bi-translate feature-icon"></i>
+                            <h5 class="card-title">Multiple Languages</h5>
+                            <p class="card-text">
+                                Support for German, English, French, and Italian with high accuracy transcription.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Batch Processing -->
+                <div class="col-md-4">
+                    <div class="card h-100 feature-card">
+                        <div class="card-body text-center">
+                            <i class="bi bi-collection feature-icon"></i>
+                            <h5 class="card-title">Batch Processing</h5>
+                            <p class="card-text">
+                                Upload multiple files at once using ZIP archives for efficient processing.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Progress Tracking -->
+                <div class="col-md-4">
+                    <div class="card h-100 feature-card">
+                        <div class="card-body text-center">
+                            <i class="bi bi-graph-up feature-icon"></i>
+                            <h5 class="card-title">Progress Tracking</h5>
+                            <p class="card-text">
+                                Monitor transcription progress in real-time with detailed status updates.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row g-4 mt-3">
+                <!-- File Support -->
+                <div class="col-md-4">
+                    <div class="card h-100 feature-card">
+                        <div class="card-body text-center">
+                            <i class="bi bi-file-earmark-music feature-icon"></i>
+                            <h5 class="card-title">File Support</h5>
+                            <p class="card-text">
+                                Support for MP3, WAV, and M4A audio files with automatic format detection.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Secure Processing -->
+                <div class="col-md-4">
+                    <div class="card h-100 feature-card">
+                        <div class="card-body text-center">
+                            <i class="bi bi-shield-check feature-icon"></i>
+                            <h5 class="card-title">Secure Processing</h5>
+                            <p class="card-text">
+                                End-to-end encryption and secure file handling for your sensitive data.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Time Estimation -->
+                <div class="col-md-4">
+                    <div class="card h-100 feature-card">
+                        <div class="card-body text-center">
+                            <i class="bi bi-clock-history feature-icon"></i>
+                            <h5 class="card-title">Time Estimation</h5>
+                            <p class="card-text">
+                                Accurate processing time estimates based on file size and language.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Call to Action -->
+    <section class="bg-light py-5">
+        <div class="container text-center">
+            <h2 class="mb-4">Ready to Start?</h2>
+            <p class="lead mb-4">
+                Upload your audio files now and get accurate transcriptions in minutes.
+            </p>
+            <a href="/upload" class="btn btn-primary btn-lg">
+                Upload Files
+                <i class="bi bi-cloud-upload ms-2"></i>
+            </a>
+        </div>
+    </section>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

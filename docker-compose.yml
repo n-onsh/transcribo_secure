@@ -267,7 +267,6 @@ services:
       args:
         BUILDKIT_PROGRESS: quiet
         HF_AUTH_TOKEN: ${HF_AUTH_TOKEN}
-    container_name: transcribo-secure-transcriber
     logging:
       driver: "json-file"
       options:
@@ -279,6 +278,7 @@ services:
       - BACKEND_API_URL=http://backend:8080/api/v1
       - DEVICE=${DEVICE}
       - BATCH_SIZE=${BATCH_SIZE}
+      - WORKER_COUNT=${WORKER_COUNT:-1}
       - HF_AUTH_TOKEN=${HF_AUTH_TOKEN}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -286,6 +286,8 @@ services:
       - OTEL_SERVICE_NAME=transcriber
       - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - SUPPORTED_LANGUAGES=${SUPPORTED_LANGUAGES:-de,en,fr,it}
+      - DEFAULT_LANGUAGE=${DEFAULT_LANGUAGE:-de}
     volumes:
       - "transcriber_data:/tmp/transcriber"
       - "huggingface_cache:/root/.cache/huggingface"
@@ -298,12 +300,34 @@ services:
     networks:
       - transcribo-secure-network
     deploy:
+      mode: replicated
+      replicas: ${TRANSCRIBER_REPLICAS:-1}
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
       resources:
+        limits:
+          cpus: '4'
+          memory: 16G
         reservations:
+          cpus: '2'
+          memory: 8G
           devices:
             - driver: nvidia
-              count: all
+              count: 1  # Assign 1 GPU per instance
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
     labels:
       - "traefik.enable=true"
@@ -311,6 +335,12 @@ services:
       - "traefik.http.services.transcriber.loadbalancer.server.port=8000"
       - "traefik.http.routers.transcriber.entrypoints=websecure"
       - "traefik.http.routers.transcriber.tls=true"
+      - "traefik.http.services.transcriber.loadbalancer.sticky=true"
+      - "traefik.http.services.transcriber.loadbalancer.sticky.cookie.name=transcriber"
+      - "traefik.http.services.transcriber.loadbalancer.sticky.cookie.secure=true"
+      - "traefik.http.services.transcriber.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.transcriber.loadbalancer.healthcheck.interval=30s"
+      - "traefik.http.services.transcriber.loadbalancer.healthcheck.timeout=5s"
 
   prometheus:
     image: prom/prometheus:v2.49.1

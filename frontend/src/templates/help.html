@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Help - Transcribo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .help-section {
+            background-color: #fff;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        .help-section h5 {
+            color: #0d6efd;
+            margin-bottom: 1rem;
+        }
+        .help-nav {
+            position: sticky;
+            top: 1rem;
+        }
+        .help-nav .nav-link {
+            color: #495057;
+            padding: 0.5rem 1rem;
+            border-radius: 0.25rem;
+        }
+        .help-nav .nav-link:hover {
+            background-color: #f8f9fa;
+        }
+        .help-nav .nav-link.active {
+            color: #0d6efd;
+            background-color: #e9ecef;
+            font-weight: 500;
+        }
+        .step-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            background-color: #0d6efd;
+            color: white;
+            border-radius: 50%;
+            font-size: 0.875rem;
+            margin-right: 0.5rem;
+        }
+        .faq-item {
+            border-bottom: 1px solid #dee2e6;
+            padding: 1rem 0;
+        }
+        .faq-item:last-child {
+            border-bottom: none;
+        }
+        .faq-question {
+            color: #0d6efd;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .faq-answer {
+            margin-top: 0.5rem;
+            color: #6c757d;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 1rem;
+            border-radius: 0.25rem;
+            overflow-x: auto;
+        }
+        .tip-box {
+            background-color: #e9ecef;
+            border-left: 4px solid #0d6efd;
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 0 0.25rem 0.25rem 0;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="/">Transcribo</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/upload">Upload</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/jobs">Jobs</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/settings">Settings</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/help">Help</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Content -->
+    <div class="container mt-4">
+        <div class="row">
+            <!-- Sidebar Navigation -->
+            <div class="col-md-3">
+                <nav class="help-nav" id="help-nav">
+                    <div class="nav flex-column nav-pills">
+                        <a class="nav-link active" href="#getting-started">Getting Started</a>
+                        <a class="nav-link" href="#file-upload">File Upload</a>
+                        <a class="nav-link" href="#batch-processing">Batch Processing</a>
+                        <a class="nav-link" href="#languages">Language Support</a>
+                        <a class="nav-link" href="#job-management">Job Management</a>
+                        <a class="nav-link" href="#settings">Settings</a>
+                        <a class="nav-link" href="#troubleshooting">Troubleshooting</a>
+                        <a class="nav-link" href="#faq">FAQ</a>
+                    </div>
+                </nav>
+            </div>
+
+            <!-- Main Content -->
+            <div class="col-md-9">
+                <!-- Getting Started -->
+                <div class="help-section" id="getting-started">
+                    <h5>
+                        <i class="bi bi-rocket-takeoff me-2"></i>
+                        Getting Started
+                    </h5>
+                    <p>Welcome to Transcribo! Follow these steps to get started:</p>
+                    <div class="mb-3">
+                        <p><span class="step-number">1</span> Upload your audio file</p>
+                        <p class="ms-4">Navigate to the Upload page and select your audio file. We support MP3, WAV, and M4A formats.</p>
+                    </div>
+                    <div class="mb-3">
+                        <p><span class="step-number">2</span> Choose your language</p>
+                        <p class="ms-4">Select the primary language of your audio from the dropdown menu.</p>
+                    </div>
+                    <div class="mb-3">
+                        <p><span class="step-number">3</span> Start processing</p>
+                        <p class="ms-4">Click "Start Upload" and wait for the transcription to complete.</p>
+                    </div>
+                    <div class="mb-3">
+                        <p><span class="step-number">4</span> View results</p>
+                        <p class="ms-4">Once processing is complete, you can view, edit, and download your transcription.</p>
+                    </div>
+                </div>
+
+                <!-- File Upload -->
+                <div class="help-section" id="file-upload">
+                    <h5>
+                        <i class="bi bi-cloud-upload me-2"></i>
+                        File Upload
+                    </h5>
+                    <h6>Supported Formats</h6>
+                    <ul>
+                        <li><strong>MP3</strong> - Recommended format, best balance of quality and size</li>
+                        <li><strong>WAV</strong> - Highest quality, but larger file size</li>
+                        <li><strong>M4A</strong> - Good quality, commonly used on Apple devices</li>
+                    </ul>
+                    <div class="tip-box">
+                        <strong>Tip:</strong> For best results, ensure your audio is clear and has minimal background noise.
+                    </div>
+                    <h6 class="mt-3">File Size Limits</h6>
+                    <ul>
+                        <li>Single file: up to 1GB</li>
+                        <li>ZIP archive: up to 2GB</li>
+                        <li>Maximum files per ZIP: 100</li>
+                    </ul>
+                </div>
+
+                <!-- Batch Processing -->
+                <div class="help-section" id="batch-processing">
+                    <h5>
+                        <i class="bi bi-collection me-2"></i>
+                        Batch Processing
+                    </h5>
+                    <p>Process multiple files at once using ZIP archives:</p>
+                    <ol>
+                        <li>Create a ZIP file containing your audio files</li>
+                        <li>Upload the ZIP file</li>
+                        <li>Set default language (can be overridden per file)</li>
+                        <li>Monitor progress for each file individually</li>
+                    </ol>
+                    <div class="tip-box">
+                        <strong>Tip:</strong> Name your files descriptively to easily track multiple transcriptions.
+                    </div>
+                </div>
+
+                <!-- Language Support -->
+                <div class="help-section" id="languages">
+                    <h5>
+                        <i class="bi bi-translate me-2"></i>
+                        Language Support
+                    </h5>
+                    <h6>Supported Languages</h6>
+                    <ul>
+                        <li><strong>German (de)</strong> - Standard German (Hochdeutsch)</li>
+                        <li><strong>English (en)</strong> - US/UK English</li>
+                        <li><strong>French (fr)</strong> - Standard French</li>
+                        <li><strong>Italian (it)</strong> - Standard Italian</li>
+                    </ul>
+                    <h6 class="mt-3">Language Detection</h6>
+                    <p>Enable automatic language detection in settings for multi-language content.</p>
+                </div>
+
+                <!-- Job Management -->
+                <div class="help-section" id="job-management">
+                    <h5>
+                        <i class="bi bi-list-check me-2"></i>
+                        Job Management
+                    </h5>
+                    <h6>Job States</h6>
+                    <ul>
+                        <li><strong>Pending</strong> - Job is queued for processing</li>
+                        <li><strong>Processing</strong> - Transcription in progress</li>
+                        <li><strong>Completed</strong> - Transcription finished successfully</li>
+                        <li><strong>Failed</strong> - Error occurred during processing</li>
+                    </ul>
+                    <h6 class="mt-3">Actions</h6>
+                    <ul>
+                        <li><strong>View</strong> - Open transcription in editor</li>
+                        <li><strong>Cancel</strong> - Stop processing (pending/processing jobs)</li>
+                        <li><strong>Download</strong> - Save transcription as text file</li>
+                    </ul>
+                </div>
+
+                <!-- Settings -->
+                <div class="help-section" id="settings">
+                    <h5>
+                        <i class="bi bi-gear me-2"></i>
+                        Settings
+                    </h5>
+                    <h6>Processing Options</h6>
+                    <ul>
+                        <li><strong>Quality</strong> - Balance between speed and accuracy</li>
+                        <li><strong>Noise Reduction</strong> - Improve quality for noisy audio</li>
+                        <li><strong>Speaker Detection</strong> - Identify different speakers</li>
+                    </ul>
+                    <h6 class="mt-3">Display Options</h6>
+                    <ul>
+                        <li><strong>Theme</strong> - Light, dark, or system default</li>
+                        <li><strong>Jobs Per Page</strong> - Number of jobs to display</li>
+                        <li><strong>Time Estimates</strong> - Show processing time estimates</li>
+                    </ul>
+                </div>
+
+                <!-- Troubleshooting -->
+                <div class="help-section" id="troubleshooting">
+                    <h5>
+                        <i class="bi bi-tools me-2"></i>
+                        Troubleshooting
+                    </h5>
+                    <h6>Common Issues</h6>
+                    <div class="faq-item">
+                        <p class="faq-question">Upload fails</p>
+                        <div class="faq-answer">
+                            <ul>
+                                <li>Check file format and size limits</li>
+                                <li>Ensure stable internet connection</li>
+                                <li>Try uploading smaller files first</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <p class="faq-question">Poor transcription quality</p>
+                        <div class="faq-answer">
+                            <ul>
+                                <li>Verify correct language selection</li>
+                                <li>Enable noise reduction for noisy audio</li>
+                                <li>Use higher quality audio source if possible</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <p class="faq-question">Processing takes too long</p>
+                        <div class="faq-answer">
+                            <ul>
+                                <li>Check file size and quality settings</li>
+                                <li>Consider splitting large files</li>
+                                <li>Monitor system status for issues</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- FAQ -->
+                <div class="help-section" id="faq">
+                    <h5>
+                        <i class="bi bi-question-circle me-2"></i>
+                        Frequently Asked Questions
+                    </h5>
+                    <div class="faq-item">
+                        <p class="faq-question">What audio formats are supported?</p>
+                        <div class="faq-answer">
+                            We support MP3, WAV, and M4A formats. MP3 is recommended for the best balance of quality and file size.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <p class="faq-question">How long does processing take?</p>
+                        <div class="faq-answer">
+                            Processing time depends on file size, audio quality, and selected language. Typically, a 1-hour audio file takes 15-30 minutes to process.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <p class="faq-question">Can I process multiple files at once?</p>
+                        <div class="faq-answer">
+                            Yes, you can upload multiple files in a ZIP archive. Each file will be processed individually.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <p class="faq-question">How accurate is the transcription?</p>
+                        <div class="faq-answer">
+                            Accuracy depends on audio quality and language. With clear audio and correct language selection, accuracy typically ranges from 85% to 95%.
+                        </div>
+                    </div>
+                    <div class="faq-item">
+                        <p class="faq-question">Can I edit the transcription?</p>
+                        <div class="faq-answer">
+                            Yes, completed transcriptions can be edited in our built-in editor. Changes are saved automatically.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Smooth scroll to sections
+        document.querySelectorAll('.help-nav .nav-link').forEach(link => {
+            link.addEventListener('click', e => {
+                e.preventDefault();
+                const id = link.getAttribute('href');
+                document.querySelector(id).scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+        });
+
+        // Update active nav item on scroll
+        window.addEventListener('scroll', () => {
+            const sections = document.querySelectorAll('.help-section');
+            const navLinks = document.querySelectorAll('.help-nav .nav-link');
+
+            let current = '';
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop - 100;
+                if (window.pageYOffset >= sectionTop) {
+                    current = '#' + section.getAttribute('id');
+                }
+            });
+
+            navLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === current) {
+                    link.classList.add('active');
+                }
+            });
+        });
+    </script>
+</body>
+</html>
