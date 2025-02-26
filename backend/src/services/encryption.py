@@ -1,8 +1,15 @@
 """Encryption service."""
 
 import logging
+import os
+import secrets
 from typing import Dict, Optional, Any
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.exceptions import InvalidKey
 from ..utils.logging import log_info, log_error, log_warning
+from ..utils.exceptions import EncryptionError
 from ..utils.metrics import (
     ENCRYPTION_OPERATIONS,
     ENCRYPTION_ERRORS,
@@ -140,24 +147,98 @@ class EncryptionService:
             raise
 
     async def _encrypt_data(self, data: bytes, key: bytes) -> Dict[str, Any]:
-        """Encrypt data with key."""
-        # Implementation would encrypt data
-        return {
-            'encrypted_data': data,
-            'metadata': {}
-        }
+        """Encrypt data with key using AES-GCM."""
+        try:
+            # Generate a random 96-bit nonce
+            nonce = os.urandom(12)
+            
+            # Create AESGCM cipher
+            cipher = AESGCM(key)
+            
+            # Encrypt data with authenticated encryption
+            encrypted_data = cipher.encrypt(nonce, data, None)
+            
+            return {
+                'encrypted_data': encrypted_data,
+                'metadata': {
+                    'algorithm': 'AES-GCM',
+                    'nonce': nonce,
+                    'version': '1.0'
+                }
+            }
+        except Exception as e:
+            log_error(f"Encryption error: {type(e).__name__}")
+            raise EncryptionError("Failed to encrypt data") from e
 
     async def _decrypt_data(self, encrypted_data: bytes, key: bytes, metadata: Dict) -> bytes:
-        """Decrypt data with key."""
-        # Implementation would decrypt data
-        return encrypted_data
+        """Decrypt data with key using AES-GCM."""
+        try:
+            # Validate metadata
+            if not metadata or 'nonce' not in metadata:
+                raise ValueError("Invalid metadata: missing nonce")
+            
+            # Create AESGCM cipher
+            cipher = AESGCM(key)
+            
+            # Decrypt data with authenticated decryption
+            decrypted_data = cipher.decrypt(metadata['nonce'], encrypted_data, None)
+            
+            return decrypted_data
+        except InvalidKey:
+            log_error("Invalid encryption key")
+            raise EncryptionError("Invalid encryption key")
+        except Exception as e:
+            log_error(f"Decryption error: {type(e).__name__}")
+            raise EncryptionError("Failed to decrypt data") from e
 
     async def _generate_key(self) -> bytes:
-        """Generate encryption key."""
-        # Implementation would generate key
-        return b''
+        """Generate a secure encryption key using PBKDF2."""
+        try:
+            # Generate a random salt
+            salt = os.urandom(16)
+            
+            # Generate a random password
+            password = secrets.token_bytes(32)
+            
+            # Use PBKDF2 to derive a key
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,  # 256-bit key
+                salt=salt,
+                iterations=100000,
+            )
+            
+            # Derive the key
+            key = kdf.derive(password)
+            
+            return key
+        except Exception as e:
+            log_error(f"Key generation error: {type(e).__name__}")
+            raise EncryptionError("Failed to generate encryption key") from e
 
     async def _validate_key(self, key: bytes) -> bool:
         """Validate encryption key."""
-        # Implementation would validate key
-        return True
+        try:
+            # Check key length
+            if len(key) != 32:  # 256 bits
+                log_warning(f"Invalid key length: {len(key)} bytes")
+                return False
+            
+            # Test key with a sample encryption
+            test_data = b"test"
+            nonce = os.urandom(12)
+            cipher = AESGCM(key)
+            
+            try:
+                # Try to encrypt and decrypt test data
+                encrypted = cipher.encrypt(nonce, test_data, None)
+                decrypted = cipher.decrypt(nonce, encrypted, None)
+                
+                # Verify decryption was successful
+                return decrypted == test_data
+            except Exception:
+                return False
+                
+        except Exception as e:
+            log_error(f"Key validation error: {type(e).__name__}")
+            return False

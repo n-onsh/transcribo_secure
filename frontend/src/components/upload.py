@@ -30,12 +30,13 @@ class UploadComponent:
         self.validation_rules = {
             "single_file": {
                 "max_size": 1024 * 1024 * 1024,  # 1GB
-                "types": [".mp3", ".wav", ".m4a"]
+                "types": [".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov"]
             },
             "zip_file": {
-                "max_size": 1024 * 1024 * 1024 * 2,  # 2GB
+                "max_size": 1024 * 1024 * 1024 * 12,  # 12GB
                 "max_files": 100,
-                "types": [".zip"]
+                "types": [".zip"],
+                "allowed_content": [".mp3", ".wav", ".m4a", ".aac", ".mp4", ".mov"]
             }
         }
 
@@ -43,7 +44,8 @@ class UploadComponent:
         self,
         request: Request,
         selected_language: Optional[str] = None,
-        errors: Optional[Dict[str, str]] = None
+        errors: Optional[Dict[str, str]] = None,
+        job_status: Optional[Dict] = None
     ) -> HTMLResponse:
         """Render upload component."""
         return templates.TemplateResponse(
@@ -54,7 +56,13 @@ class UploadComponent:
                 "file_types": self.file_types,
                 "validation": json.dumps(self.validation_rules),
                 "selected_language": selected_language,
-                "errors": errors
+                "errors": errors,
+                "job_status": job_status,
+                "progress_stages": {
+                    "extracting": "Extracting files from ZIP",
+                    "processing": "Processing audio files",
+                    "completed": "Processing complete"
+                }
             }
         )
 
@@ -69,7 +77,8 @@ class UploadComponent:
         self,
         file_name: str,
         file_size: int,
-        is_zip: bool = False
+        is_zip: bool = False,
+        zip_contents: Optional[List[str]] = None
     ) -> List[str]:
         """Validate file against rules."""
         errors = []
@@ -89,6 +98,27 @@ class UploadComponent:
                 f"Invalid file type. Supported types: "
                 f"{', '.join(rules['types'])}"
             )
+        
+        # Validate ZIP contents if provided
+        if is_zip and zip_contents:
+            # Check number of files
+            if len(zip_contents) > rules["max_files"]:
+                errors.append(
+                    f"Too many files in ZIP. Maximum is {rules['max_files']} files"
+                )
+            
+            # Check file types in ZIP
+            invalid_files = []
+            for zip_file in zip_contents:
+                zip_ext = zip_file.lower()[zip_file.rfind("."):]
+                if zip_ext not in rules["allowed_content"]:
+                    invalid_files.append(zip_file)
+            
+            if invalid_files:
+                errors.append(
+                    f"Invalid files in ZIP: {', '.join(invalid_files)}. "
+                    f"Supported types: {', '.join(rules['allowed_content'])}"
+                )
         
         return errors
 
@@ -110,9 +140,10 @@ class UploadComponent:
             
             "batch_upload": """
                 ZIP files can contain multiple audio files.
-                All files must be supported audio formats.
-                Maximum 100 files per ZIP.
-                Each file will be processed separately.
+                Supported formats: MP3, WAV, M4A, AAC, MP4, MOV
+                Maximum 100 files per ZIP, up to 12GB total.
+                Files are processed in parallel for efficiency.
+                Progress tracking for extraction and processing.
             """,
             
             "processing_time": """

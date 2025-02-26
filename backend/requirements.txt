@@ -17,6 +17,7 @@ python-magic>=0.4.24
 
 # Azure integration
 azure-keyvault-secrets>=4.7.0
+azure-keyvault-keys>=4.7.0
 azure-identity>=1.15.0
 msal>=1.26.0
 
@@ -30,3 +31,25 @@ pydantic-settings>=2.0.0
 python-jose[cryptography]>=3.3.0
 cryptography>=42.0.0
 orjson>=3.9.15
+
+# Type checking and validation
+mypy>=1.8.0
+types-python-jose>=3.3.4.20240106
+types-cryptography>=3.3.23.20240106
+types-psutil>=5.9.5.20240106
+types-aiofiles>=23.2.0.20240106
+types-orjson>=3.6.2
+sqlalchemy[mypy]>=2.0.25
+pydantic[mypy]>=2.0.0
+
+# Development tools
+black>=24.1.1
+isort>=5.13.2
+flake8>=7.0.0
+flake8-docstrings>=1.7.0
+flake8-quotes>=3.4.0
+flake8-bugbear>=24.1.17
+pytest>=8.0.0
+pytest-asyncio>=0.23.5
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0

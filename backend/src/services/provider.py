@@ -1,8 +1,12 @@
 """Service provider for backend."""
 
 import logging
+import os
 from typing import Optional, Dict, List, Type, TypeVar, Any
+from azure.keyvault.keys import KeyClient
+from azure.identity import DefaultAzureCredential
 from ..utils.logging import log_info, log_error
+from ..utils.exceptions import ConfigurationError
 from .database import DatabaseService
 from .storage import StorageService
 from .encryption import EncryptionService
@@ -29,49 +33,222 @@ from .tag_service import TagService
 
 T = TypeVar('T')
 
+from enum import Enum, auto
+from dataclasses import dataclass
+from typing import Callable, Dict, Optional, Set, Type, TypeVar, Any
+
+class ServiceLifetime(Enum):
+    """Service lifetime options."""
+    SINGLETON = auto()  # One instance for entire application
+    SCOPED = auto()    # One instance per scope (e.g. request)
+    TRANSIENT = auto() # New instance each time
+
+@dataclass
+class ServiceRegistration:
+    """Service registration information."""
+    service_type: Type
+    factory: Callable[[], Any]
+    lifetime: ServiceLifetime
+    dependencies: Set[Type]
+    instance: Optional[Any] = None
+
 class ServiceProvider:
     """Provider for backend services."""
 
     def __init__(self):
         """Initialize service provider."""
         self.settings = None
-        self.database = None
-        self.storage: Optional[StorageService] = None
-        self.encryption = None
-        self.job_manager: Optional[JobManager] = None
-        self.key_management = None
-        self.file_key_service = None
-        self.database_file_keys = None
-        self.zip_handler: Optional[ZipHandlerService] = None
-        self.viewer: Optional[ViewerService] = None
-        self.vocabulary: Optional[VocabularyService] = None
-        self.fault_tolerance = None
-        self.job_distribution = None
-        self.cleanup = None
-        self.transcription: Optional[TranscriptionService] = None
-        self.tag_service: Optional[TagService] = None
         self.initialized = False
+        self._initializing = set()  # Track services being initialized to detect cycles
+        self._registrations: Dict[Type, ServiceRegistration] = {}
+        self._instances: Dict[Type, Any] = {}
+        
+        # Register core services
+        self._register_core_services()
 
-        # Interface mappings
-        self._interface_mappings = {
-            StorageInterface: lambda: self.storage,
-            JobManagerInterface: lambda: self.job_manager,
-            VocabularyInterface: lambda: self.vocabulary,
-            ZipHandlerInterface: lambda: self.zip_handler,
-            ViewerInterface: lambda: self.viewer,
-            TagServiceInterface: lambda: self.tag_service
-        }
+    def register(
+        self,
+        service_type: Type[T],
+        factory: Callable[[], T],
+        lifetime: ServiceLifetime = ServiceLifetime.SINGLETON,
+        dependencies: Set[Type] = None
+    ) -> None:
+        """Register a service."""
+        self._registrations[service_type] = ServiceRegistration(
+            service_type=service_type,
+            factory=factory,
+            lifetime=lifetime,
+            dependencies=dependencies or set()
+        )
 
-    def get(self, interface: Type[T]) -> Optional[T]:
-        """Get a service by its interface."""
+    def get(self, service_type: Type[T]) -> T:
+        """Get a service instance."""
         if not self.initialized:
             raise RuntimeError("Service provider not initialized")
+            
+        # Check if service is registered
+        registration = self._registrations.get(service_type)
+        if not registration:
+            raise ValueError(f"No service registered for type {service_type.__name__}")
+            
+        # Return existing instance for singletons
+        if (registration.lifetime == ServiceLifetime.SINGLETON and 
+            service_type in self._instances):
+            return self._instances[service_type]
+            
+        # Detect circular dependencies
+        if service_type in self._initializing:
+            raise ValueError(f"Circular dependency detected for {service_type.__name__}")
+            
+        # Create new instance
+        self._initializing.add(service_type)
+        try:
+            # Resolve dependencies first
+            for dep_type in registration.dependencies:
+                if dep_type not in self._instances:
+                    self.get(dep_type)
+                    
+            # Create instance
+            instance = registration.factory()
+            
+            # Store singleton instances
+            if registration.lifetime == ServiceLifetime.SINGLETON:
+                self._instances[service_type] = instance
+                
+            return instance
+            
+        finally:
+            self._initializing.remove(service_type)
+
+    def _register_core_services(self) -> None:
+        """Register core services with their dependencies."""
+        # Register settings first
+        self.register(
+            Dict[str, Any],
+            lambda: self._load_settings(),
+            ServiceLifetime.SINGLETON
+        )
         
-        getter = self._interface_mappings.get(interface)
-        if not getter:
-            raise ValueError(f"No service registered for interface {interface.__name__}")
+        # Register Azure Key Vault client
+        self.register(
+            KeyClient,
+            lambda: KeyClient(
+                vault_url=self.get(Dict[str, Any])['key_vault_url'],
+                credential=DefaultAzureCredential()
+            ),
+            ServiceLifetime.SINGLETON
+        )
         
-        return getter()
+        # Register core services with dependencies
+        self.register(
+            DatabaseService,
+            lambda: DatabaseService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON
+        )
+        
+        self.register(
+            StorageService,
+            lambda: StorageService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            KeyManagementService,
+            lambda: KeyManagementService(
+                self.get(Dict[str, Any]),
+                self.get(KeyClient)
+            ),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any], KeyClient}
+        )
+        
+        self.register(
+            EncryptionService,
+            lambda: EncryptionService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            FileKeyService,
+            lambda: FileKeyService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            DatabaseFileKeyService,
+            lambda: DatabaseFileKeyService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            JobManager,
+            lambda: JobManager(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            JobDistributionService,
+            lambda: JobDistributionService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            TranscriptionService,
+            lambda: TranscriptionService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            ZipHandlerService,
+            lambda: ZipHandlerService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            ViewerService,
+            lambda: ViewerService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            VocabularyService,
+            lambda: VocabularyService(
+                self.get(JobManager),
+                self.get(TranscriptionService)
+            ),
+            ServiceLifetime.SINGLETON,
+            {JobManager, TranscriptionService}
+        )
+        
+        self.register(
+            FaultToleranceService,
+            lambda: FaultToleranceService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
+        
+        self.register(
+            TagService,
+            lambda: TagService(self.get(DatabaseService)),
+            ServiceLifetime.SINGLETON,
+            {DatabaseService}
+        )
+        
+        self.register(
+            CleanupService,
+            lambda: CleanupService(self.get(Dict[str, Any])),
+            ServiceLifetime.SINGLETON,
+            {Dict[str, Any]}
+        )
 
     async def initialize(self):
         """Initialize services."""
@@ -80,75 +257,16 @@ class ServiceProvider:
 
         try:
             # Initialize settings
-            self.settings = self._load_settings()
+            self.settings = self.get(Dict[str, Any])
             log_info("Settings loaded")
 
-            # Initialize core services
-            self.database = DatabaseService(self.settings)
-            await self.database.initialize()
-            log_info("Database service initialized")
-
-            self.storage = StorageService(self.settings)
-            await self.storage.initialize()
-            log_info("Storage service initialized")
-
-            self.encryption = EncryptionService(self.settings)
-            await self.encryption.initialize()
-            log_info("Encryption service initialized")
-
-            # Initialize key services
-            self.key_management = KeyManagementService(self.settings)
-            await self.key_management.initialize()
-            log_info("Key management service initialized")
-
-            self.file_key_service = FileKeyService(self.settings)
-            await self.file_key_service.initialize()
-            log_info("File key service initialized")
-
-            self.database_file_keys = DatabaseFileKeyService(self.settings)
-            await self.database_file_keys.initialize()
-            log_info("Database file keys service initialized")
-
-            # Initialize job services
-            self.job_manager = JobManager(self.settings)
-            await self.job_manager.initialize()
-            log_info("Job manager initialized")
-
-            self.job_distribution = JobDistributionService(self.settings)
-            await self.job_distribution.initialize()
-            log_info("Job distribution service initialized")
-
-            # Initialize transcription service
-            self.transcription = TranscriptionService(self.settings)
-            await self.transcription.initialize()
-            log_info("Transcription service initialized")
-
-            # Initialize file handling services
-            self.zip_handler = ZipHandlerService()
-            await self.zip_handler.initialize()
-            log_info("ZIP handler initialized")
-
-            self.viewer = ViewerService(self.settings)
-            await self.viewer.initialize()
-            log_info("Viewer service initialized")
-
-            # Initialize auxiliary services
-            self.vocabulary = VocabularyService(self.job_manager, self.transcription)
-            await self.vocabulary.initialize()
-            log_info("Vocabulary service initialized")
-
-            self.fault_tolerance = FaultToleranceService(self.settings)
-            await self.fault_tolerance.initialize()
-            log_info("Fault tolerance service initialized")
-
-            # Initialize tag service
-            self.tag_service = TagService(self.database)
-            await self.tag_service.initialize()
-            log_info("Tag service initialized")
-
-            self.cleanup = CleanupService(self.settings)
-            await self.cleanup.initialize()
-            log_info("Cleanup service initialized")
+            # Initialize all singleton services
+            for registration in self._registrations.values():
+                if registration.lifetime == ServiceLifetime.SINGLETON:
+                    service = self.get(registration.service_type)
+                    if hasattr(service, 'initialize'):
+                        await service.initialize()
+                        log_info(f"{registration.service_type.__name__} initialized")
 
             self.initialized = True
             log_info("Service provider initialization complete")
@@ -160,66 +278,17 @@ class ServiceProvider:
     async def cleanup(self):
         """Clean up services."""
         try:
-            if self.tag_service:
-                await self.tag_service.cleanup()
-                log_info("Tag service cleaned up")
-
-            if self.cleanup:
-                await self.cleanup.cleanup()
-                log_info("Cleanup service cleaned up")
-
-            if self.fault_tolerance:
-                await self.fault_tolerance.cleanup()
-                log_info("Fault tolerance service cleaned up")
-
-            if self.vocabulary:
-                await self.vocabulary.cleanup()
-                log_info("Vocabulary service cleaned up")
-
-            if self.viewer:
-                await self.viewer.cleanup()
-                log_info("Viewer service cleaned up")
-
-            if self.zip_handler:
-                await self.zip_handler.cleanup()
-                log_info("ZIP handler cleaned up")
-
-            if self.job_distribution:
-                await self.job_distribution.cleanup()
-                log_info("Job distribution service cleaned up")
-
-            if self.transcription:
-                await self.transcription.cleanup()
-                log_info("Transcription service cleaned up")
-
-            if self.job_manager:
-                await self.job_manager.cleanup()
-                log_info("Job manager cleaned up")
-
-            if self.database_file_keys:
-                await self.database_file_keys.cleanup()
-                log_info("Database file keys service cleaned up")
-
-            if self.file_key_service:
-                await self.file_key_service.cleanup()
-                log_info("File key service cleaned up")
-
-            if self.key_management:
-                await self.key_management.cleanup()
-                log_info("Key management service cleaned up")
-
-            if self.encryption:
-                await self.encryption.cleanup()
-                log_info("Encryption service cleaned up")
-
-            if self.storage:
-                await self.storage.cleanup()
-                log_info("Storage service cleaned up")
-
-            if self.database:
-                await self.database.cleanup()
-                log_info("Database service cleaned up")
-
+            # Clean up all singleton services in reverse dependency order
+            for registration in reversed(list(self._registrations.values())):
+                if (registration.lifetime == ServiceLifetime.SINGLETON and
+                    registration.service_type in self._instances):
+                    service = self._instances[registration.service_type]
+                    if hasattr(service, 'cleanup'):
+                        await service.cleanup()
+                        log_info(f"{registration.service_type.__name__} cleaned up")
+            
+            # Clear all instances
+            self._instances.clear()
             self.initialized = False
             log_info("Service provider cleanup complete")
 
@@ -229,12 +298,14 @@ class ServiceProvider:
 
     def _load_settings(self) -> Dict:
         """Load settings from environment."""
-        import os
+        # Get required Azure Key Vault settings
+        key_vault_url = os.getenv('AZURE_KEY_VAULT_URL')
+        if not key_vault_url:
+            raise ConfigurationError("AZURE_KEY_VAULT_URL environment variable is required")
 
         return {
             'database_url': os.getenv('DATABASE_URL', 'postgresql://user:pass@localhost/db'),
             'storage_path': os.getenv('STORAGE_PATH', '/data'),
-            'encryption_key': os.getenv('ENCRYPTION_KEY', 'default-key'),
             'temp_dir': os.getenv('TEMP_DIR', '/tmp'),
             'cache_dir': os.getenv('CACHE_DIR', '/cache'),
             'max_file_size': int(os.getenv('MAX_FILE_SIZE', '104857600')),  # 100MB
@@ -242,7 +313,12 @@ class ServiceProvider:
             'cleanup_interval': int(os.getenv('CLEANUP_INTERVAL', '3600')),  # 1 hour
             'job_timeout': int(os.getenv('JOB_TIMEOUT', '3600')),  # 1 hour
             'retry_limit': int(os.getenv('RETRY_LIMIT', '3')),
-            'worker_count': int(os.getenv('WORKER_COUNT', '4'))
+            'worker_count': int(os.getenv('WORKER_COUNT', '4')),
+            # Key management settings
+            'key_vault_url': key_vault_url,
+            'key_rotation_interval': int(os.getenv('KEY_ROTATION_INTERVAL', '86400')),  # 24 hours
+            'max_key_age': int(os.getenv('MAX_KEY_AGE', '2592000')),  # 30 days
+            'min_key_length': int(os.getenv('MIN_KEY_LENGTH', '32'))
         }
 
 # Global service provider instance

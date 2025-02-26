@@ -170,6 +170,46 @@
                             <div class="progress-label">0%</div>
                         </div>
 
+                        <!-- ZIP Processing Progress -->
+                        <div id="zip-progress" style="display: none">
+                            <!-- Extraction Progress -->
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <span>
+                                        <i class="bi bi-file-earmark-zip me-2"></i>
+                                        Extracting Files
+                                    </span>
+                                    <span class="badge bg-primary" id="zip-extract-status">0%</span>
+                                </div>
+                                <div class="progress">
+                                    <div class="progress-bar bg-primary progress-bar-striped progress-bar-animated"
+                                         role="progressbar"
+                                         style="width: 0%"
+                                         id="zip-extract-progress"></div>
+                                </div>
+                            </div>
+
+                            <!-- Processing Progress -->
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <span>
+                                        <i class="bi bi-cpu me-2"></i>
+                                        Processing Files
+                                    </span>
+                                    <span class="badge bg-info" id="zip-process-status">0%</span>
+                                </div>
+                                <div class="progress">
+                                    <div class="progress-bar bg-info progress-bar-striped progress-bar-animated"
+                                         role="progressbar"
+                                         style="width: 0%"
+                                         id="zip-process-progress"></div>
+                                </div>
+                            </div>
+
+                            <!-- File Status -->
+                            <div class="small text-muted mb-3" id="zip-file-status"></div>
+                        </div>
+
                         <!-- Validation Errors -->
                         <div class="validation-error" id="validation-errors"></div>
 
@@ -401,9 +441,17 @@
             const progressBar = document.getElementById('progress-bar');
             const progressBarInner = progressBar.querySelector('.progress-bar');
             const progressLabel = progressBar.querySelector('.progress-label');
+            const zipProgress = document.getElementById('zip-progress');
             
             progressBar.style.display = 'block';
             uploadBtn.disabled = true;
+
+            // Reset ZIP progress
+            document.getElementById('zip-extract-progress').style.width = '0%';
+            document.getElementById('zip-extract-status').textContent = '0%';
+            document.getElementById('zip-process-progress').style.width = '0%';
+            document.getElementById('zip-process-status').textContent = '0%';
+            document.getElementById('zip-file-status').textContent = '';
             
             try {
                 let fileIndex = 0;
@@ -414,6 +462,11 @@
                     formData.append('hash', fileData.hash);
                     formData.append('hash_algorithm', fileData.hashAlgorithm);
                     
+                    const isZip = fileData.file.name.toLowerCase().endsWith('.zip');
+                    if (isZip) {
+                        zipProgress.style.display = 'block';
+                    }
+
                     const response = await fetch('/api/files/upload', {
                         method: 'POST',
                         body: formData,
@@ -425,6 +478,13 @@
                     if (!response.ok) {
                         const error = await response.json();
                         throw new Error(error.detail || 'Upload failed');
+                    }
+
+                    const result = await response.json();
+                    
+                    if (isZip && result.job_id) {
+                        // Start polling for ZIP progress
+                        await pollZipProgress(result.job_id);
                     }
                     
                     fileIndex++;
@@ -442,6 +502,7 @@
                 setTimeout(() => {
                     validationErrors.innerHTML = '';
                     progressBar.style.display = 'none';
+                    zipProgress.style.display = 'none';
                 }, 3000);
                 
             } catch (error) {
@@ -451,6 +512,59 @@
             
             uploadBtn.disabled = false;
         });
+
+        // Function to poll ZIP progress
+        async function pollZipProgress(jobId) {
+            const extractProgress = document.getElementById('zip-extract-progress');
+            const extractStatus = document.getElementById('zip-extract-status');
+            const processProgress = document.getElementById('zip-process-progress');
+            const processStatus = document.getElementById('zip-process-status');
+            const fileStatus = document.getElementById('zip-file-status');
+
+            while (true) {
+                try {
+                    const response = await fetch(`/api/jobs/${jobId}/status`);
+                    if (!response.ok) {
+                        throw new Error('Failed to get job status');
+                    }
+
+                    const status = await response.json();
+                    
+                    if (status.is_zip) {
+                        const progress = status.zip_progress || {};
+                        
+                        if (progress.stage === 'extracting') {
+                            extractProgress.style.width = `${progress.percent}%`;
+                            extractStatus.textContent = `${Math.round(progress.percent)}%`;
+                            fileStatus.textContent = 'Extracting files from ZIP archive...';
+                        } else if (progress.stage === 'processing') {
+                            extractProgress.style.width = '100%';
+                            extractStatus.textContent = '100%';
+                            processProgress.style.width = `${progress.percent}%`;
+                            processStatus.textContent = `${Math.round(progress.percent)}%`;
+                            fileStatus.textContent = `Processing ${status.sub_jobs?.length || 0} files...`;
+                        } else if (progress.stage === 'completed') {
+                            extractProgress.style.width = '100%';
+                            extractStatus.textContent = '100%';
+                            processProgress.style.width = '100%';
+                            processStatus.textContent = '100%';
+                            fileStatus.textContent = 'Processing complete!';
+                            break;
+                        }
+
+                        if (status.status === 'error') {
+                            showErrors([status.error || 'ZIP processing failed']);
+                            break;
+                        }
+                    }
+
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                } catch (error) {
+                    showErrors([error.message]);
+                    break;
+                }
+            }
+        }
     </script>
 </body>
 </html>
