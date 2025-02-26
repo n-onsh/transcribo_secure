@@ -1,13 +1,10 @@
 """Error handling middleware."""
 
-import uuid
-from typing import Callable, Dict, Any, Optional
+import traceback
 from datetime import datetime
+from typing import Dict, Any, Optional, cast
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy.exc import SQLAlchemyError
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from ..utils.logging import log_error
 from ..utils.exceptions import (
     TranscriboError,
@@ -16,212 +13,164 @@ from ..utils.exceptions import (
     AuthorizationError,
     ResourceNotFoundError,
     ConflictError,
-    RateLimitError,
+    DependencyError,
+    ServiceError,
     DatabaseError,
     StorageError,
+    FileError,
+    EditorError,
+    RouteError,
+    HashVerificationError,
+    ZipError,
     TranscriptionError,
-    ConfigurationError
+    EncryptionError,
+    KeyManagementError,
+    JobError
 )
 from ..types import ErrorContext
-from ..models.base import ErrorResponse
+from ..utils.metrics import track_error
 
-class ErrorHandlerMiddleware(BaseHTTPMiddleware):
-    """Middleware for handling errors."""
+async def error_handler(request: Request, call_next) -> Response:
+    """Handle errors in request processing.
     
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: RequestResponseEndpoint
-    ) -> Response:
-        """Handle request and catch errors.
+    Args:
+        request: FastAPI request
+        call_next: Next middleware/handler in chain
         
-        Args:
-            request: FastAPI request
-            call_next: Next middleware/endpoint
-            
-        Returns:
-            Response with error details if error occurred
-        """
-        try:
-            return await call_next(request)
-            
-        except Exception as e:
-            return await self.handle_error(e, request)
-            
-    async def handle_error(
-        self,
-        error: Exception,
-        request: Request
-    ) -> JSONResponse:
-        """Handle different types of errors.
+    Returns:
+        Response with error details if error occurred
+    """
+    try:
+        return await call_next(request)
+
+    except TranscriboError as e:
+        # Get error context
+        error_context = e.details or {}
         
-        Args:
-            error: Exception that occurred
-            request: FastAPI request
+        # Add common fields if not present
+        if "timestamp" not in error_context:
+            error_context["timestamp"] = datetime.utcnow()
+        if "operation" not in error_context:
+            error_context["operation"] = request.url.path
             
-        Returns:
-            JSON response with error details
-        """
-        # Generate request ID for tracking
-        request_id = str(uuid.uuid4())
+        # Add request details
+        error_context["details"] = {
+            **(error_context.get("details", {})),
+            "method": request.method,
+            "url": str(request.url),
+            "client": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent")
+        }
         
-        # Get basic error context
+        # Track error metrics
+        track_error(
+            error_type=e.__class__.__name__,
+            status_code=e.status_code,
+            operation=error_context.get("operation", "unknown")
+        )
+        
+        # Log error with context
+        log_error(
+            f"{e.__class__.__name__}: {e.message}",
+            error_context
+        )
+        
+        # Return error response
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "error": e.__class__.__name__,
+                "message": e.message,
+                "details": error_context.get("details", {})
+            }
+        )
+
+    except Exception as e:
+        # Create error context for unhandled exceptions
         error_context: ErrorContext = {
             "operation": request.url.path,
             "timestamp": datetime.utcnow(),
-            "trace_id": request_id,
             "details": {
+                "error": str(e),
+                "traceback": traceback.format_exc(),
                 "method": request.method,
                 "url": str(request.url),
-                "client_host": request.client.host if request.client else None,
-                "headers": dict(request.headers)
+                "client": request.client.host if request.client else None,
+                "user_agent": request.headers.get("user-agent")
             }
         }
         
-        # Handle different error types
-        if isinstance(error, PydanticValidationError):
-            return self.handle_validation_error(error, error_context)
-            
-        elif isinstance(error, SQLAlchemyError):
-            return self.handle_database_error(error, error_context)
-            
-        elif isinstance(error, TranscriboError):
-            return self.handle_transcribo_error(error, error_context)
-            
-        else:
-            return self.handle_unknown_error(error, error_context)
-            
-    def handle_validation_error(
-        self,
-        error: PydanticValidationError,
-        context: ErrorContext
-    ) -> JSONResponse:
-        """Handle Pydantic validation errors.
+        # Track unhandled error
+        track_error(
+            error_type="UnhandledException",
+            status_code=500,
+            operation=error_context["operation"]
+        )
         
-        Args:
-            error: Validation error
-            context: Error context
-            
-        Returns:
-            JSON response with validation error details
-        """
-        # Extract validation error details
-        error_details = {
-            "validation_errors": [
-                {
-                    "loc": err["loc"],
-                    "msg": err["msg"],
-                    "type": err["type"]
+        # Log unhandled error
+        log_error(
+            f"Unhandled exception: {str(e)}",
+            error_context
+        )
+        
+        # Return generic error response
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "InternalServerError",
+                "message": "An unexpected error occurred",
+                "details": {
+                    "request_id": request.state.request_id
+                    if hasattr(request.state, "request_id")
+                    else None
                 }
-                for err in error.errors()
-            ]
+            }
+        )
+
+def get_error_details(error: Exception) -> Dict[str, Any]:
+    """Get error details for response.
+    
+    Args:
+        error: Exception to get details for
+        
+    Returns:
+        Dictionary of error details
+    """
+    if isinstance(error, TranscriboError):
+        return {
+            "error": error.__class__.__name__,
+            "message": error.message,
+            "details": error.details.get("details", {})
+            if error.details
+            else {}
         }
-        context["details"].update(error_details)
+    else:
+        return {
+            "error": "InternalServerError",
+            "message": "An unexpected error occurred",
+            "details": {}
+        }
+
+def get_error_response(
+    error: Exception,
+    status_code: Optional[int] = None
+) -> JSONResponse:
+    """Get error response.
+    
+    Args:
+        error: Exception to create response for
+        status_code: Optional status code override
         
-        response = ErrorResponse(
-            code="VALIDATION_ERROR",
-            message="Invalid input data",
-            details=context,
-            help_url="https://docs.transcribo.io/errors/validation",
-            request_id=context["trace_id"],
-            timestamp=context["timestamp"]
-        )
-        
+    Returns:
+        JSON response with error details
+    """
+    if isinstance(error, TranscriboError):
         return JSONResponse(
-            status_code=400,
-            content=response.model_dump()
+            status_code=status_code or error.status_code,
+            content=get_error_details(error)
         )
-        
-    def handle_database_error(
-        self,
-        error: SQLAlchemyError,
-        context: ErrorContext
-    ) -> JSONResponse:
-        """Handle SQLAlchemy database errors.
-        
-        Args:
-            error: Database error
-            context: Error context
-            
-        Returns:
-            JSON response with database error details
-        """
-        # Log the full error for debugging
-        log_error(f"Database error: {str(error)}", exc_info=error)
-        
-        response = ErrorResponse(
-            code="DATABASE_ERROR",
-            message="Database operation failed",
-            details=context,
-            help_url="https://docs.transcribo.io/errors/database",
-            request_id=context["trace_id"],
-            timestamp=context["timestamp"]
-        )
-        
+    else:
         return JSONResponse(
-            status_code=500,
-            content=response.model_dump()
-        )
-        
-    def handle_transcribo_error(
-        self,
-        error: TranscriboError,
-        context: ErrorContext
-    ) -> JSONResponse:
-        """Handle application-specific errors.
-        
-        Args:
-            error: Application error
-            context: Error context
-            
-        Returns:
-            JSON response with error details
-        """
-        # Merge error details with context
-        if error.details:
-            context["details"].update(error.details.get("details", {}))
-        
-        response = ErrorResponse(
-            code=error.__class__.__name__.upper(),
-            message=str(error),
-            details=context,
-            help_url=error.help_url,
-            request_id=context["trace_id"],
-            timestamp=context["timestamp"]
-        )
-        
-        return JSONResponse(
-            status_code=error.status_code,
-            content=response.model_dump()
-        )
-        
-    def handle_unknown_error(
-        self,
-        error: Exception,
-        context: ErrorContext
-    ) -> JSONResponse:
-        """Handle unknown errors.
-        
-        Args:
-            error: Unknown error
-            context: Error context
-            
-        Returns:
-            JSON response with error details
-        """
-        # Log the full error for debugging
-        log_error(f"Unexpected error: {str(error)}", exc_info=error)
-        
-        response = ErrorResponse(
-            code="INTERNAL_SERVER_ERROR",
-            message="An unexpected error occurred",
-            details=context,
-            help_url="https://docs.transcribo.io/errors/internal",
-            request_id=context["trace_id"],
-            timestamp=context["timestamp"]
-        )
-        
-        return JSONResponse(
-            status_code=500,
-            content=response.model_dump()
+            status_code=status_code or 500,
+            content=get_error_details(error)
         )

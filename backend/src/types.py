@@ -2,7 +2,7 @@
 
 from typing import (
     TypeVar, Dict, List, Optional, Union, Any, Protocol,
-    TypedDict, Callable, Awaitable, Tuple, NewType
+    TypedDict, Callable, Awaitable, Tuple, NewType, Set
 )
 from datetime import datetime
 from uuid import UUID
@@ -31,7 +31,7 @@ QueryResult = List[Dict[str, Any]]
 TransactionResult = List[QueryResult]
 
 # Common dictionary types
-class FileMetadata(TypedDict):
+class FileMetadata(TypedDict, total=False):
     """File metadata structure."""
     name: str
     size: int
@@ -40,6 +40,23 @@ class FileMetadata(TypedDict):
     updated_at: datetime
     owner_id: UserID
     tags: List[TagID]
+    original_files: List[str]
+    is_combined: bool
+    hash: str
+    hash_algorithm: str
+    mime_type: str
+    duration: float
+
+class FileUploadResult(TypedDict):
+    """Type definition for file upload result."""
+    file_path: str
+    metadata: FileMetadata
+
+class FileOptions(TypedDict, total=False):
+    """Type definition for file options."""
+    language: Optional[str]
+    vocabulary: List[str]
+    generate_srt: bool
 
 class JobOptions(TypedDict, total=False):
     """Job options structure."""
@@ -207,3 +224,72 @@ class TimeRange(TypedDict):
     start: datetime
     end: datetime
     duration: float
+
+# Transcription types
+class TranscriptionSegment(TypedDict):
+    """Type definition for transcription segment."""
+    start: float
+    end: float
+    text: str
+    speaker: Optional[str]
+    speaker_name: Optional[str]
+    language: Optional[str]
+    confidence: Optional[float]
+
+class TranscriptionData(TypedDict):
+    """Type definition for transcription data."""
+    segments: List[TranscriptionSegment]
+    metadata: Optional[Dict[str, JSONValue]]
+    duration: Optional[float]
+    language: Optional[str]
+    model: Optional[str]
+    version: Optional[str]
+
+class SpeakerInfo(TypedDict):
+    """Type definition for speaker information."""
+    id: str
+    name: str
+    language: Optional[str]
+    metadata: Optional[Dict[str, JSONValue]]
+
+# ZIP handling types
+class ZipProcessingResult(TypedDict):
+    """Type definition for ZIP processing result."""
+    combined_file: str
+    original_files: List[str]
+    is_combined: bool
+    extract_dir: str
+
+# Editor types
+class EditorSegment(TypedDict):
+    """Type definition for editor segment."""
+    start: float
+    end: float
+    text: str
+    speaker: str
+    language: Optional[str]
+    confidence: Optional[float]
+
+class EditorSpeaker(TypedDict):
+    """Type definition for editor speaker."""
+    id: str
+    name: str
+    language: Optional[str]
+    metadata: Optional[Dict[str, JSONValue]]
+
+class EditorData(TypedDict):
+    """Type definition for editor data."""
+    job: Dict[str, Any]
+    transcription: Dict[str, Any]
+    media_url: str
+
+class EditorTemplate(TypedDict):
+    """Type definition for editor template."""
+    html: str
+    js: str
+    css: str
+
+class EditorUpdate(TypedDict):
+    """Type definition for editor update."""
+    status: str
+    transcription: Dict[str, Any]

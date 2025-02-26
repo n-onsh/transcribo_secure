@@ -4,8 +4,20 @@ import os
 import zipfile
 import asyncio
 import tempfile
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Set, cast
+from datetime import datetime
 from ..utils.logging import log_info, log_error, log_warning
+from ..utils.exceptions import ZipError, TranscriboError
+from ..types import (
+    ServiceConfig,
+    ErrorContext,
+    ZipProcessingResult,
+    ZipProgressCallback,
+    ZipConfig,
+    JobID
+)
+from .base import BaseService
 from ..utils.metrics import (
     ZIP_PROCESSING_TIME,
     ZIP_EXTRACTION_ERRORS,
@@ -14,40 +26,46 @@ from ..utils.metrics import (
     track_zip_processing,
     track_zip_error
 )
-from .interfaces import ZipHandlerInterface
 
-class ZipHandlerService(ZipHandlerInterface):
+class ZipHandlerService(BaseService):
     """Service for handling ZIP file uploads."""
 
-    def __init__(self, settings: Dict):
-        """Initialize ZIP handler service."""
-        self.initialized = False
-        self.settings = settings
-        self.supported_audio_extensions = set(
+    def __init__(self, settings: ServiceConfig) -> None:
+        """Initialize ZIP handler service.
+        
+        Args:
+            settings: Service configuration
+        """
+        super().__init__(settings)
+        self.supported_audio_extensions: Set[str] = set(
             settings.get('supported_audio_extensions', 
             ['.mp3', '.wav', '.m4a', '.aac', '.mp4', '.mov'])
         )
-        self.progress_callbacks = {}
-        self.temp_dirs = set()
-        self.temp_files = set()
-        self.max_zip_size = int(settings.get('max_zip_size', 12 * 1024 * 1024 * 1024))  # Default 12GB
-        self.ffmpeg_path = settings.get('ffmpeg_path', 'ffmpeg')
+        self.progress_callbacks: Dict[JobID, ZipProgressCallback] = {}
+        self.temp_dirs: Set[str] = set()
+        self.temp_files: Set[str] = set()
+        self.max_zip_size: int = int(settings.get('max_zip_size', 12 * 1024 * 1024 * 1024))  # Default 12GB
+        self.ffmpeg_path: str = settings.get('ffmpeg_path', 'ffmpeg')
 
-    async def initialize(self):
-        """Initialize the service."""
-        if self.initialized:
-            return
-
+    async def _initialize_impl(self) -> None:
+        """Initialize service implementation."""
         try:
-            self.initialized = True
             log_info("ZIP handler service initialized")
 
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "initialize_zip_handler",
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
             log_error(f"Failed to initialize ZIP handler service: {str(e)}")
-            raise
+            raise TranscriboError(
+                "Failed to initialize ZIP handler service",
+                details=error_context
+            )
 
-    async def cleanup(self):
-        """Clean up the service."""
+    async def _cleanup_impl(self) -> None:
+        """Clean up service implementation."""
         try:
             # Clean up all temporary directories
             for dir_path in list(self.temp_dirs):
@@ -62,19 +80,45 @@ class ZipHandlerService(ZipHandlerInterface):
                 except Exception as e:
                     log_warning(f"Failed to remove temporary file {file_path}: {str(e)}")
             
-            self.initialized = False
             log_info("ZIP handler service cleaned up")
 
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "cleanup_zip_handler",
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
             log_error(f"Error during ZIP handler service cleanup: {str(e)}")
-            raise
+            raise TranscriboError(
+                "Failed to clean up ZIP handler service",
+                details=error_context
+            )
 
-    async def process_zip_file(self, file_path: str, job_id: str, progress_callback=None) -> Dict:
-        """Process a ZIP file for transcription."""
+    async def process_zip_file(
+        self,
+        file_path: str,
+        job_id: JobID,
+        progress_callback: Optional[ZipProgressCallback] = None
+    ) -> ZipProcessingResult:
+        """Process a ZIP file for transcription.
+        
+        Args:
+            file_path: Path to ZIP file
+            job_id: Job ID for tracking
+            progress_callback: Optional callback for progress updates
+            
+        Returns:
+            ZIP processing result
+            
+        Raises:
+            ZipError: If ZIP processing fails
+        """
         start_time = asyncio.get_event_loop().time()
         extract_dir = None
 
         try:
+            self._check_initialized()
+
             # Validate ZIP file
             await self.validate_zip_file(file_path)
             
@@ -111,7 +155,7 @@ class ZipHandlerService(ZipHandlerInterface):
             ZIP_FILE_COUNT.observe(len(audio_files))
                 
             if not audio_files:
-                raise ValueError("No audio/video files found in ZIP")
+                raise ZipError("No audio/video files found in ZIP")
             
             # Sort files to ensure consistent order
             audio_files.sort()
@@ -155,42 +199,89 @@ class ZipHandlerService(ZipHandlerInterface):
         except Exception as e:
             ZIP_EXTRACTION_ERRORS.inc()
             track_zip_error()
+            error_context: ErrorContext = {
+                "operation": "process_zip_file",
+                "resource_id": job_id,
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "file_path": file_path
+                }
+            }
             log_error(f"Error processing ZIP file for job {job_id}: {str(e)}")
             if extract_dir:
                 await self.cleanup_extract_dir(extract_dir)
-            raise
+            raise ZipError("Failed to process ZIP file", details=error_context)
 
     async def validate_zip_file(self, file_path: str) -> None:
-        """Validate ZIP file before processing."""
+        """Validate ZIP file before processing.
+        
+        Args:
+            file_path: Path to ZIP file to validate
+            
+        Raises:
+            ZipError: If validation fails
+        """
         try:
             # Check file size
             file_size = os.path.getsize(file_path)
             if file_size > self.max_zip_size:
-                raise ValueError(f"ZIP file too large. Maximum size is {self.max_zip_size / (1024*1024*1024):.1f}GB")
+                raise ZipError(
+                    f"ZIP file too large. Maximum size is {self.max_zip_size / (1024*1024*1024):.1f}GB"
+                )
             
             # Verify ZIP integrity
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 # Check for encryption
                 if any(info.flag_bits & 0x1 for info in zip_ref.filelist):
-                    raise ValueError("Encrypted ZIP files are not supported")
+                    raise ZipError("Encrypted ZIP files are not supported")
                 
                 # Test ZIP integrity
                 error_list = zip_ref.testzip()
                 if error_list:
-                    raise ValueError(f"Corrupt ZIP file, first bad file: {error_list}")
+                    raise ZipError(f"Corrupt ZIP file, first bad file: {error_list}")
                 
                 # Check total uncompressed size
                 total_size = sum(info.file_size for info in zip_ref.filelist)
                 if total_size > self.max_zip_size * 2:  # Allow for some compression
-                    raise ValueError("Uncompressed content too large")
+                    raise ZipError("Uncompressed content too large")
                 
         except zipfile.BadZipFile as e:
-            raise ValueError(f"Invalid ZIP file: {str(e)}")
+            error_context: ErrorContext = {
+                "operation": "validate_zip_file",
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "file_path": file_path
+                }
+            }
+            raise ZipError("Invalid ZIP file", details=error_context)
+        except ZipError:
+            raise
         except Exception as e:
-            raise ValueError(f"ZIP validation failed: {str(e)}")
+            error_context: ErrorContext = {
+                "operation": "validate_zip_file",
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "file_path": file_path
+                }
+            }
+            raise ZipError("ZIP validation failed", details=error_context)
 
-    async def update_progress(self, job_id: str, stage: str, progress: float) -> None:
-        """Update progress through callback if registered."""
+    async def update_progress(
+        self,
+        job_id: JobID,
+        stage: str,
+        progress: float
+    ) -> None:
+        """Update progress through callback if registered.
+        
+        Args:
+            job_id: Job ID for tracking
+            stage: Current processing stage
+            progress: Progress percentage (0-100)
+        """
         if job_id in self.progress_callbacks:
             try:
                 await self.progress_callbacks[job_id](stage, progress)
@@ -198,7 +289,11 @@ class ZipHandlerService(ZipHandlerInterface):
                 log_warning(f"Failed to update progress for job {job_id}: {str(e)}")
 
     async def cleanup_extract_dir(self, extract_dir: str) -> None:
-        """Clean up extraction directory."""
+        """Clean up extraction directory.
+        
+        Args:
+            extract_dir: Directory to clean up
+        """
         try:
             if extract_dir in self.temp_dirs:
                 self.temp_dirs.remove(extract_dir)
@@ -218,8 +313,23 @@ class ZipHandlerService(ZipHandlerInterface):
         except Exception as e:
             log_warning(f"Failed to clean up directory {extract_dir}: {str(e)}")
 
-    async def combine_audio_files(self, audio_files: List[str], job_id: str) -> str:
-        """Combine multiple audio files into one."""
+    async def combine_audio_files(
+        self,
+        audio_files: List[str],
+        job_id: JobID
+    ) -> str:
+        """Combine multiple audio files into one.
+        
+        Args:
+            audio_files: List of audio file paths to combine
+            job_id: Job ID for tracking
+            
+        Returns:
+            Path to combined audio file
+            
+        Raises:
+            ZipError: If audio file combination fails
+        """
         list_file = None
         output_file = None
         
@@ -227,7 +337,7 @@ class ZipHandlerService(ZipHandlerInterface):
             # Validate audio files
             for file_path in audio_files:
                 if not await self.validate_audio_file(file_path):
-                    raise ValueError(f"Invalid or unsupported audio file: {file_path}")
+                    raise ZipError(f"Invalid or unsupported audio file: {file_path}")
             
             # Create temporary file for the list of files
             list_file = os.path.join(tempfile.gettempdir(), f"files_{job_id}.txt")
@@ -267,11 +377,11 @@ class ZipHandlerService(ZipHandlerInterface):
             if process.returncode != 0:
                 error_msg = stderr.decode()
                 if "No such file or directory" in error_msg:
-                    raise ValueError(f"ffmpeg not found at {self.ffmpeg_path}")
+                    raise ZipError(f"ffmpeg not found at {self.ffmpeg_path}")
                 elif "Invalid data found when processing input" in error_msg:
-                    raise ValueError("Invalid or corrupted audio file detected")
+                    raise ZipError("Invalid or corrupted audio file detected")
                 else:
-                    raise ValueError(f"Failed to combine audio files: {error_msg}")
+                    raise ZipError(f"Failed to combine audio files: {error_msg}")
             
             # Clean up list file
             if list_file and os.path.exists(list_file):
@@ -289,11 +399,27 @@ class ZipHandlerService(ZipHandlerInterface):
                 os.remove(output_file)
                 self.temp_files.remove(output_file)
             
+            error_context: ErrorContext = {
+                "operation": "combine_audio_files",
+                "resource_id": job_id,
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "file_count": len(audio_files)
+                }
+            }
             log_error(f"Error combining audio files for job {job_id}: {str(e)}")
-            raise
+            raise ZipError("Failed to combine audio files", details=error_context)
 
     async def validate_audio_file(self, file_path: str) -> bool:
-        """Validate audio file format using ffprobe."""
+        """Validate audio file format using ffprobe.
+        
+        Args:
+            file_path: Path to audio file to validate
+            
+        Returns:
+            True if file is valid, False otherwise
+        """
         try:
             # Use ffprobe to check file format
             cmd = [
@@ -326,10 +452,24 @@ class ZipHandlerService(ZipHandlerInterface):
             return False
 
     def is_supported_audio_file(self, filename: str) -> bool:
-        """Check if a file has a supported audio/video extension."""
+        """Check if a file has a supported audio/video extension.
+        
+        Args:
+            filename: Filename to check
+            
+        Returns:
+            True if file extension is supported, False otherwise
+        """
         ext = os.path.splitext(filename.lower())[1]
         return ext in self.supported_audio_extensions
 
     def is_zip_file(self, filename: str) -> bool:
-        """Check if a file is a ZIP file."""
+        """Check if a file is a ZIP file.
+        
+        Args:
+            filename: Filename to check
+            
+        Returns:
+            True if file is a ZIP file, False otherwise
+        """
         return filename.lower().endswith('.zip')

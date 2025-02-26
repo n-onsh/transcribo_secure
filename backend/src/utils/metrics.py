@@ -1,317 +1,342 @@
-"""Metrics collection utilities."""
+"""Metrics collection and tracking."""
 
 import time
 import functools
-from typing import Dict, Any, Optional, Callable, TypeVar, cast
-from prometheus_client import Counter, Gauge, Histogram, Summary
-from ..types import MetricLabels, MetricValue, MetricCallback
-
-# Type variable for decorated functions
-F = TypeVar('F', bound=Callable[..., Any])
-
-# Service operation metrics
-SERVICE_OPERATION_DURATION = Histogram(
-    'service_operation_duration_seconds',
-    'Duration of service operations',
-    ['service', 'operation']
+from typing import Dict, Any, Optional, Callable
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    REGISTRY,
+    CollectorRegistry
 )
 
-# Database metrics
+# Create custom registry
+REGISTRY = CollectorRegistry()
+
+# Operation metrics
 DB_OPERATION_DURATION = Histogram(
-    'db_operation_duration_seconds',
+    'transcribo_db_operation_duration_seconds',
     'Duration of database operations',
-    ['operation']
+    ['operation'],
+    registry=REGISTRY
 )
-DB_OPERATIONS = Counter(
-    'db_operations_total',
-    'Number of database operations',
-    ['operation']
+
+API_REQUEST_DURATION = Histogram(
+    'transcribo_api_request_duration_seconds',
+    'Duration of API requests',
+    ['method', 'endpoint'],
+    registry=REGISTRY
 )
-DB_ERRORS = Counter(
-    'db_errors_total',
-    'Number of database errors'
+
+# Error metrics
+ERROR_COUNT = Counter(
+    'transcribo_errors_total',
+    'Total number of errors',
+    ['type', 'status_code', 'operation'],
+    registry=REGISTRY
 )
-DB_CONNECTIONS = Gauge(
-    'db_connections',
-    'Number of active database connections'
+
+# File metrics
+FILE_UPLOAD_SIZE = Histogram(
+    'transcribo_file_upload_size_bytes',
+    'Size of uploaded files',
+    ['type'],
+    registry=REGISTRY
 )
-DB_POOL_SIZE = Gauge(
-    'db_pool_size',
-    'Database connection pool size',
-    ['type']  # idle, used, total
+
+FILE_PROCESSING_TIME = Histogram(
+    'transcribo_file_processing_duration_seconds',
+    'Duration of file processing',
+    ['operation'],
+    registry=REGISTRY
 )
 
 # Job metrics
-JOB_PROCESSING_TIME = Histogram(
-    'job_processing_time_seconds',
-    'Time taken to process jobs',
-    ['type']  # audio, video, zip
-)
-JOB_STATUS_COUNT = Counter(
-    'job_status_total',
-    'Number of jobs by status',
-    ['status']
-)
-JOB_ERROR_COUNT = Counter(
-    'job_errors_total',
-    'Number of job processing errors',
-    ['type']
+JOB_DURATION = Histogram(
+    'transcribo_job_duration_seconds',
+    'Duration of jobs',
+    ['type', 'status'],
+    registry=REGISTRY
 )
 
-# ZIP processing metrics
+JOB_STATUS = Counter(
+    'transcribo_job_status_total',
+    'Job status counts',
+    ['status'],
+    registry=REGISTRY
+)
+
+# ZIP metrics
 ZIP_PROCESSING_TIME = Histogram(
-    'zip_processing_time_seconds',
-    'Time taken to process ZIP files'
-)
-ZIP_FILE_COUNT = Counter(
-    'zip_files_total',
-    'Number of files processed from ZIP archives'
+    'transcribo_zip_processing_duration_seconds',
+    'Duration of ZIP processing',
+    buckets=[1, 5, 10, 30, 60, 120, 300, 600],
+    registry=REGISTRY
 )
 
-# Key management metrics
-KEY_OPERATIONS = Counter(
-    'key_operations_total',
-    'Number of key operations',
-    ['operation']
+ZIP_EXTRACTION_ERRORS = Counter(
+    'transcribo_zip_extraction_errors_total',
+    'Total number of ZIP extraction errors',
+    registry=REGISTRY
 )
-KEY_ERRORS = Counter(
-    'key_errors_total',
-    'Number of key operation errors'
+
+ZIP_FILE_COUNT = Histogram(
+    'transcribo_zip_file_count',
+    'Number of files in ZIP archives',
+    buckets=[1, 2, 5, 10, 20, 50, 100],
+    registry=REGISTRY
 )
-KEY_LATENCY = Histogram(
-    'key_operation_latency_seconds',
-    'Latency of key operations'
+
+ZIP_TOTAL_SIZE = Histogram(
+    'transcribo_zip_total_size_bytes',
+    'Total size of ZIP archives',
+    buckets=[
+        1024*1024,      # 1MB
+        10*1024*1024,   # 10MB
+        100*1024*1024,  # 100MB
+        1024*1024*1024, # 1GB
+        10*1024*1024*1024  # 10GB
+    ],
+    registry=REGISTRY
+)
+
+# Transcription metrics
+TRANSCRIPTION_DURATION = Histogram(
+    'transcribo_transcription_duration_seconds',
+    'Duration of transcription processing',
+    ['model', 'language'],
+    registry=REGISTRY
+)
+
+TRANSCRIPTION_ACCURACY = Histogram(
+    'transcribo_transcription_accuracy',
+    'Transcription accuracy scores',
+    ['model', 'language'],
+    registry=REGISTRY
+)
+
+TRANSCRIPTION_ERRORS = Counter(
+    'transcribo_transcription_errors_total',
+    'Total number of transcription errors',
+    ['type'],
+    registry=REGISTRY
+)
+
+# Editor metrics
+EDITOR_OPERATION_DURATION = Histogram(
+    'transcribo_editor_operation_duration_seconds',
+    'Duration of editor operations',
+    ['operation'],
+    registry=REGISTRY
+)
+
+EDITOR_ERRORS = Counter(
+    'transcribo_editor_errors_total',
+    'Total number of editor errors',
+    ['type'],
+    registry=REGISTRY
 )
 
 # Resource metrics
 RESOURCE_USAGE = Gauge(
-    'resource_usage',
+    'transcribo_resource_usage',
     'Resource usage metrics',
-    ['resource', 'type']  # cpu/memory/disk, used/total
+    ['resource', 'type'],
+    registry=REGISTRY
 )
 
-def track_time(
-    metric: Histogram,
-    labels: Optional[Dict[str, str]] = None
-) -> Callable[[F], F]:
+# System metrics
+SYSTEM_HEALTH = Gauge(
+    'transcribo_system_health',
+    'System health status',
+    ['component'],
+    registry=REGISTRY
+)
+
+def track_time(metric: Histogram, labels: Dict[str, str]) -> Callable:
     """Decorator to track operation timing.
     
     Args:
-        metric: Prometheus histogram metric
-        labels: Optional metric labels
+        metric: Histogram metric to record time in
+        labels: Labels to apply to metric
         
     Returns:
-        Decorated function that tracks timing
+        Decorator function
     """
-    def decorator(func: F) -> F:
+    def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             start_time = time.time()
             try:
                 result = await func(*args, **kwargs)
                 duration = time.time() - start_time
-                if labels:
-                    metric.labels(**labels).observe(duration)
-                else:
-                    metric.observe(duration)
+                metric.labels(**labels).observe(duration)
                 return result
-            except Exception as e:
+            except Exception:
                 duration = time.time() - start_time
-                if labels:
-                    metric.labels(**labels).observe(duration)
-                else:
-                    metric.observe(duration)
+                metric.labels(**labels).observe(duration)
                 raise
-        return cast(F, wrapper)
+        return wrapper
     return decorator
 
-def track_db_operation(operation: str) -> None:
-    """Track database operation.
-    
-    Args:
-        operation: Operation name
-    """
-    DB_OPERATIONS.labels(operation=operation).inc()
-
-def track_db_error() -> None:
-    """Track database error."""
-    DB_ERRORS.inc()
-
-def track_db_latency(duration: float) -> None:
-    """Track database operation latency.
-    
-    Args:
-        duration: Operation duration in seconds
-    """
-    DB_OPERATION_DURATION.observe(duration)
-
-def track_db_connection(count: int) -> None:
-    """Track database connection count.
-    
-    Args:
-        count: Number of connections
-    """
-    DB_CONNECTIONS.set(count)
-
-def track_job_processing(
-    duration: float,
-    job_type: str
+def track_error(
+    error_type: str,
+    status_code: int,
+    operation: str
 ) -> None:
-    """Track job processing time.
-    
-    Args:
-        duration: Processing duration in seconds
-        job_type: Type of job
-    """
-    JOB_PROCESSING_TIME.labels(type=job_type).observe(duration)
-
-def track_job_status(status: str) -> None:
-    """Track job status.
-    
-    Args:
-        status: Job status
-    """
-    JOB_STATUS_COUNT.labels(status=status).inc()
-
-def track_job_error(error_type: str = "unknown") -> None:
-    """Track job error.
+    """Track error occurrence.
     
     Args:
         error_type: Type of error
+        status_code: HTTP status code
+        operation: Operation where error occurred
     """
-    JOB_ERROR_COUNT.labels(type=error_type).inc()
+    ERROR_COUNT.labels(
+        type=error_type,
+        status_code=status_code,
+        operation=operation
+    ).inc()
+
+def track_job_status(status: str) -> None:
+    """Track job status change.
+    
+    Args:
+        status: New job status
+    """
+    JOB_STATUS.labels(status=status).inc()
+
+def track_job_duration(
+    job_type: str,
+    status: str,
+    duration: float
+) -> None:
+    """Track job duration.
+    
+    Args:
+        job_type: Type of job
+        status: Final job status
+        duration: Job duration in seconds
+    """
+    JOB_DURATION.labels(
+        type=job_type,
+        status=status
+    ).observe(duration)
+
+def track_file_upload(
+    file_type: str,
+    size: int
+) -> None:
+    """Track file upload.
+    
+    Args:
+        file_type: Type of file
+        size: File size in bytes
+    """
+    FILE_UPLOAD_SIZE.labels(type=file_type).observe(size)
+
+def track_file_processing(
+    operation: str,
+    duration: float
+) -> None:
+    """Track file processing duration.
+    
+    Args:
+        operation: Processing operation
+        duration: Processing duration in seconds
+    """
+    FILE_PROCESSING_TIME.labels(operation=operation).observe(duration)
 
 def track_zip_processing(duration: float) -> None:
-    """Track ZIP processing time.
+    """Track ZIP processing duration.
     
     Args:
         duration: Processing duration in seconds
     """
     ZIP_PROCESSING_TIME.observe(duration)
 
-def track_key_operation(operation: str) -> None:
-    """Track key operation.
+def track_zip_error() -> None:
+    """Track ZIP extraction error."""
+    ZIP_EXTRACTION_ERRORS.inc()
+
+def track_transcription(
+    model: str,
+    language: str,
+    duration: float,
+    accuracy: Optional[float] = None
+) -> None:
+    """Track transcription metrics.
     
     Args:
-        operation: Operation name
+        model: Transcription model used
+        language: Language of transcription
+        duration: Processing duration in seconds
+        accuracy: Optional accuracy score
     """
-    KEY_OPERATIONS.labels(operation=operation).inc()
+    TRANSCRIPTION_DURATION.labels(
+        model=model,
+        language=language
+    ).observe(duration)
+    
+    if accuracy is not None:
+        TRANSCRIPTION_ACCURACY.labels(
+            model=model,
+            language=language
+        ).observe(accuracy)
 
-def track_key_error() -> None:
-    """Track key operation error."""
-    KEY_ERRORS.inc()
-
-def track_key_latency(duration: float) -> None:
-    """Track key operation latency.
+def track_transcription_error(error_type: str) -> None:
+    """Track transcription error.
     
     Args:
+        error_type: Type of transcription error
+    """
+    TRANSCRIPTION_ERRORS.labels(type=error_type).inc()
+
+def track_editor_operation(
+    operation: str,
+    duration: float
+) -> None:
+    """Track editor operation duration.
+    
+    Args:
+        operation: Editor operation
         duration: Operation duration in seconds
     """
-    KEY_LATENCY.observe(duration)
+    EDITOR_OPERATION_DURATION.labels(operation=operation).observe(duration)
+
+def track_editor_error(error_type: str) -> None:
+    """Track editor error.
+    
+    Args:
+        error_type: Type of editor error
+    """
+    EDITOR_ERRORS.labels(type=error_type).inc()
 
 def track_resource_usage(
     resource: str,
-    usage_type: str,
+    type: str,
     value: float
 ) -> None:
     """Track resource usage.
     
     Args:
-        resource: Resource name (cpu, memory, disk)
-        usage_type: Usage type (used, total)
-        value: Usage value
+        resource: Resource being measured
+        type: Type of measurement
+        value: Resource usage value
     """
     RESOURCE_USAGE.labels(
         resource=resource,
-        type=usage_type
+        type=type
     ).set(value)
 
-class MetricTracker:
-    """Context manager for tracking operation metrics."""
+def track_system_health(
+    component: str,
+    status: float
+) -> None:
+    """Track system health status.
     
-    def __init__(
-        self,
-        metric: Histogram,
-        labels: Optional[MetricLabels] = None,
-        error_counter: Optional[Counter] = None
-    ) -> None:
-        """Initialize metric tracker.
-        
-        Args:
-            metric: Prometheus histogram metric
-            labels: Optional metric labels
-            error_counter: Optional error counter metric
-        """
-        self.metric = metric
-        self.labels = labels
-        self.error_counter = error_counter
-        self.start_time: float = 0.0
-        
-    async def __aenter__(self) -> 'MetricTracker':
-        """Enter context manager."""
-        self.start_time = time.time()
-        return self
-        
-    async def __aexit__(
-        self,
-        exc_type: Optional[type],
-        exc_val: Optional[Exception],
-        exc_tb: Optional[Any]
-    ) -> None:
-        """Exit context manager.
-        
-        Args:
-            exc_type: Exception type if error occurred
-            exc_val: Exception value if error occurred
-            exc_tb: Exception traceback if error occurred
-        """
-        duration = time.time() - self.start_time
-        
-        if self.labels:
-            self.metric.labels(**self.labels).observe(duration)
-        else:
-            self.metric.observe(duration)
-            
-        if exc_type is not None and self.error_counter:
-            self.error_counter.inc()
-
-class ResourceMetrics:
-    """Resource usage metrics collector."""
-    
-    def __init__(self) -> None:
-        """Initialize resource metrics."""
-        self.metrics: Dict[str, MetricCallback] = {}
-        
-    def register_metric(
-        self,
-        name: str,
-        callback: MetricCallback
-    ) -> None:
-        """Register a metric callback.
-        
-        Args:
-            name: Metric name
-            callback: Callback function that returns metric value
-        """
-        self.metrics[name] = callback
-        
-    def collect(self) -> Dict[str, MetricValue]:
-        """Collect all registered metrics.
-        
-        Returns:
-            Dictionary of metric values
-        """
-        return {
-            name: callback()
-            for name, callback in self.metrics.items()
-        }
-        
-    def track(self) -> None:
-        """Track all registered metrics."""
-        for name, value in self.collect().items():
-            if isinstance(value, (int, float)):
-                track_resource_usage(
-                    resource=name.split('.')[0],
-                    usage_type=name.split('.')[1],
-                    value=float(value)
-                )
+    Args:
+        component: System component
+        status: Health status (0-1)
+    """
+    SYSTEM_HEALTH.labels(component=component).set(status)

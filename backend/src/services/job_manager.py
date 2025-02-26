@@ -2,13 +2,22 @@
 
 import uuid
 from datetime import datetime
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Any, cast
 from ..utils.logging import log_info, log_error, log_warning
 from ..utils.exceptions import TranscriboError, ResourceNotFoundError
 from .base import BaseService
 from .database import DatabaseService
-from ..models.job import Job, JobStatus, JobPriority, TranscriptionOptions
+from ..models.job import JobModel, JobStatus, JobPriority, JobOptions
 from ..models.job_repository import JobRepository
+from ..types import (
+    JobID,
+    ServiceConfig,
+    Result,
+    ErrorContext,
+    JSON,
+    JSONValue,
+    DBSession
+)
 from ..utils.metrics import (
     JOB_PROCESSING_TIME,
     JOB_STATUS_COUNT,
@@ -21,10 +30,21 @@ from ..utils.metrics import (
     track_zip_processing
 )
 
+class ZipJobInfo(TypedDict):
+    """Type definition for ZIP job tracking information."""
+    status: str
+    sub_jobs: List[JobID]
+    progress: Dict[str, Any]
+    error: Optional[str]
+
 class JobManager(BaseService):
     """Service for managing job lifecycle."""
 
-    def __init__(self, settings: Dict, database_service: Optional[DatabaseService] = None):
+    def __init__(
+        self,
+        settings: ServiceConfig,
+        database_service: Optional[DatabaseService] = None
+    ) -> None:
         """Initialize job manager.
         
         Args:
@@ -32,11 +52,14 @@ class JobManager(BaseService):
             database_service: Optional database service instance
         """
         super().__init__(settings)
-        self.db = database_service
-        self.repository = None
-        self.zip_jobs = {}  # Track ZIP jobs and their sub-jobs
+        self.db: Optional[DatabaseService] = database_service
+        self.repository: Optional[JobRepository] = None
+        self.zip_jobs: Dict[JobID, ZipJobInfo] = {}  # Track ZIP jobs and their sub-jobs
+        self.max_concurrent_jobs: int = 10
+        self.job_timeout: int = 3600
+        self.cleanup_interval: int = 3600
 
-    async def _initialize_impl(self):
+    async def _initialize_impl(self) -> None:
         """Initialize service implementation."""
         try:
             # Initialize database if not provided
@@ -50,19 +73,25 @@ class JobManager(BaseService):
             self.cleanup_interval = int(self.settings.get('cleanup_interval', 3600))
 
             # Initialize repository
-            self.repository = JobRepository(self.db.pool, Job)
+            if self.db:
+                self.repository = JobRepository(self.db.pool, JobModel)
 
             # Create tables
             await self._create_tables()
 
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "initialize_job_manager",
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
             log_error(f"Failed to initialize job manager: {str(e)}")
             raise TranscriboError(
                 "Failed to initialize job manager",
-                details={"error": str(e)}
+                details=error_context
             )
 
-    async def _cleanup_impl(self):
+    async def _cleanup_impl(self) -> None:
         """Clean up service implementation."""
         try:
             if self.db:
@@ -70,13 +99,18 @@ class JobManager(BaseService):
             self.zip_jobs.clear()
 
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "cleanup_job_manager",
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
             log_error(f"Error during job manager cleanup: {str(e)}")
             raise TranscriboError(
                 "Failed to clean up job manager",
-                details={"error": str(e)}
+                details=error_context
             )
 
-    async def create_job(self, job_data: Dict) -> str:
+    async def create_job(self, job_data: Dict[str, Any]) -> JobID:
         """Create a new job.
         
         Args:
@@ -92,7 +126,7 @@ class JobManager(BaseService):
             is_zip = job_data.get('file_type') == 'zip'
             
             # Create main job record
-            job_id = str(uuid.uuid4())
+            job_id = JobID(str(uuid.uuid4()))
             job_data['job_id'] = job_id
             
             if is_zip:
@@ -103,12 +137,14 @@ class JobManager(BaseService):
                     'progress': {
                         'stage': 'created',
                         'percent': 0
-                    }
+                    },
+                    'error': None
                 }
                 job_data['is_zip'] = True
             
             # Create job record
-            await self.repository.create_job(job_data)
+            if self.repository:
+                await self.repository.create_job(job_data)
             
             # Track job creation
             JOB_STATUS_COUNT.labels(status='created').inc()
@@ -118,13 +154,25 @@ class JobManager(BaseService):
             return job_id
 
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "create_job",
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "job_data": job_data
+                }
+            }
             log_error(f"Error creating job: {str(e)}")
             raise TranscriboError(
                 "Failed to create job",
-                details={"error": str(e)}
+                details=error_context
             )
 
-    async def create_zip_sub_jobs(self, parent_job_id: str, file_list: List[str]) -> List[str]:
+    async def create_zip_sub_jobs(
+        self,
+        parent_job_id: JobID,
+        file_list: List[str]
+    ) -> List[JobID]:
         """Create sub-jobs for files in a ZIP archive.
         
         Args:
@@ -138,16 +186,17 @@ class JobManager(BaseService):
             TranscriboError: If creation fails
         """
         try:
-            sub_job_ids = []
+            sub_job_ids: List[JobID] = []
             for file_path in file_list:
-                sub_job_id = str(uuid.uuid4())
+                sub_job_id = JobID(str(uuid.uuid4()))
                 sub_job_data = {
                     'job_id': sub_job_id,
                     'parent_job_id': parent_job_id,
                     'file_path': file_path,
                     'is_sub_job': True
                 }
-                await self.repository.create_job(sub_job_data)
+                if self.repository:
+                    await self.repository.create_job(sub_job_data)
                 sub_job_ids.append(sub_job_id)
                 
                 if parent_job_id in self.zip_jobs:
@@ -158,13 +207,27 @@ class JobManager(BaseService):
             return sub_job_ids
             
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "create_zip_sub_jobs",
+                "resource_id": parent_job_id,
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "file_count": len(file_list)
+                }
+            }
             log_error(f"Error creating ZIP sub-jobs for {parent_job_id}: {str(e)}")
             raise TranscriboError(
                 "Failed to create ZIP sub-jobs",
-                details={"parent_job_id": parent_job_id, "error": str(e)}
+                details=error_context
             )
 
-    async def update_job_status(self, job_id: str, status: str, metadata: Optional[Dict] = None):
+    async def update_job_status(
+        self,
+        job_id: JobID,
+        status: str,
+        metadata: Optional[Dict[str, JSONValue]] = None
+    ) -> None:
         """Update job status.
         
         Args:
@@ -177,6 +240,9 @@ class JobManager(BaseService):
             TranscriboError: If update fails
         """
         try:
+            if not self.repository:
+                raise TranscriboError("Repository not initialized")
+                
             job_details = await self.repository.get_details(job_id)
             if not job_details:
                 raise ResourceNotFoundError("job", job_id)
@@ -192,7 +258,11 @@ class JobManager(BaseService):
                 await self._update_zip_job_progress(job_id, status, metadata)
             elif is_sub_job and 'parent_job_id' in job_details:
                 # Update parent ZIP job progress when sub-job status changes
-                await self._update_zip_job_from_sub_job(job_details['parent_job_id'], job_id, status)
+                await self._update_zip_job_from_sub_job(
+                    cast(JobID, job_details['parent_job_id']),
+                    job_id,
+                    status
+                )
             
             # Track status change
             JOB_STATUS_COUNT.labels(status=status).inc()
@@ -203,13 +273,23 @@ class JobManager(BaseService):
         except ResourceNotFoundError:
             raise
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "update_job_status",
+                "resource_id": job_id,
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "status": status,
+                    "metadata": metadata
+                }
+            }
             log_error(f"Error updating job {job_id} status: {str(e)}")
             raise TranscriboError(
                 "Failed to update job status",
-                details={"job_id": job_id, "error": str(e)}
+                details=error_context
             )
 
-    async def handle_job_error(self, job_id: str, error: str):
+    async def handle_job_error(self, job_id: JobID, error: str) -> None:
         """Handle job error.
         
         Args:
@@ -221,6 +301,9 @@ class JobManager(BaseService):
             TranscriboError: If error handling fails
         """
         try:
+            if not self.repository:
+                raise TranscriboError("Repository not initialized")
+                
             job_details = await self.repository.get_details(job_id)
             if not job_details:
                 raise ResourceNotFoundError("job", job_id)
@@ -241,7 +324,11 @@ class JobManager(BaseService):
                 self.zip_jobs[job_id]['error'] = error
             elif is_sub_job and 'parent_job_id' in job_details:
                 # Update parent ZIP job when sub-job fails
-                await self._handle_zip_sub_job_error(job_details['parent_job_id'], job_id, error)
+                await self._handle_zip_sub_job_error(
+                    cast(JobID, job_details['parent_job_id']),
+                    job_id,
+                    error
+                )
             
             # If retries remain, update status back to pending
             if retry_count < max_retries:
@@ -252,13 +339,22 @@ class JobManager(BaseService):
         except ResourceNotFoundError:
             raise
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "handle_job_error",
+                "resource_id": job_id,
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "job_error": error
+                }
+            }
             log_error(f"Error handling job {job_id} error: {str(e)}")
             raise TranscriboError(
                 "Failed to handle job error",
-                details={"job_id": job_id, "error": str(e)}
+                details=error_context
             )
 
-    async def get_job_status(self, job_id: str) -> Dict:
+    async def get_job_status(self, job_id: JobID) -> Dict[str, Any]:
         """Get job status.
         
         Args:
@@ -272,6 +368,9 @@ class JobManager(BaseService):
             TranscriboError: If status retrieval fails
         """
         try:
+            if not self.repository:
+                raise TranscriboError("Repository not initialized")
+                
             # Get job details
             job = await self.repository.get_details(job_id)
             if not job:
@@ -291,13 +390,22 @@ class JobManager(BaseService):
         except ResourceNotFoundError:
             raise
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "get_job_status",
+                "resource_id": job_id,
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
             log_error(f"Error getting job {job_id} status: {str(e)}")
             raise TranscriboError(
                 "Failed to get job status",
-                details={"job_id": job_id, "error": str(e)}
+                details=error_context
             )
 
-    async def list_jobs(self, filters: Optional[Dict] = None) -> List[Dict]:
+    async def list_jobs(
+        self,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
         """List jobs with optional filters.
         
         Args:
@@ -310,21 +418,35 @@ class JobManager(BaseService):
             TranscriboError: If listing fails
         """
         try:
+            if not self.repository:
+                raise TranscriboError("Repository not initialized")
+                
             # Get filtered jobs
             jobs = await self.repository.list_filtered(filters)
             log_info(f"Listed {len(jobs)} jobs")
             return jobs
 
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "list_jobs",
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "filters": filters
+                }
+            }
             log_error(f"Error listing jobs: {str(e)}")
             raise TranscriboError(
                 "Failed to list jobs",
-                details={"error": str(e)}
+                details=error_context
             )
 
-    async def _create_tables(self):
+    async def _create_tables(self) -> None:
         """Create required database tables."""
         try:
+            if not self.db:
+                raise TranscriboError("Database service not initialized")
+                
             create_table_query = """
             CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY,
@@ -366,13 +488,23 @@ class JobManager(BaseService):
             log_info("Created job tables if not exist")
 
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "create_tables",
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
             log_error(f"Failed to create job tables: {str(e)}")
             raise TranscriboError(
                 "Failed to create job tables",
-                details={"error": str(e)}
+                details=error_context
             )
 
-    async def _update_zip_job_progress(self, job_id: str, status: str, metadata: Optional[Dict] = None):
+    async def _update_zip_job_progress(
+        self,
+        job_id: JobID,
+        status: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Update ZIP job progress based on status and metadata."""
         if job_id not in self.zip_jobs:
             return
@@ -396,13 +528,18 @@ class JobManager(BaseService):
             }
             # Track processing time
             if metadata and 'processing_time' in metadata:
-                track_zip_processing(metadata['processing_time'])
+                track_zip_processing(float(metadata['processing_time']))
         
         zip_job['status'] = status
 
-    async def _update_zip_job_from_sub_job(self, parent_job_id: str, sub_job_id: str, status: str):
+    async def _update_zip_job_from_sub_job(
+        self,
+        parent_job_id: JobID,
+        sub_job_id: JobID,
+        status: str
+    ) -> None:
         """Update ZIP job progress when a sub-job status changes."""
-        if parent_job_id not in self.zip_jobs:
+        if parent_job_id not in self.zip_jobs or not self.repository:
             return
         
         zip_job = self.zip_jobs[parent_job_id]
@@ -422,9 +559,14 @@ class JobManager(BaseService):
             zip_job['progress']['stage'] = 'completed'
             zip_job['progress']['percent'] = 100
 
-    async def _handle_zip_sub_job_error(self, parent_job_id: str, sub_job_id: str, error: str):
+    async def _handle_zip_sub_job_error(
+        self,
+        parent_job_id: JobID,
+        sub_job_id: JobID,
+        error: str
+    ) -> None:
         """Handle error in ZIP sub-job."""
-        if parent_job_id not in self.zip_jobs:
+        if parent_job_id not in self.zip_jobs or not self.repository:
             return
         
         zip_job = self.zip_jobs[parent_job_id]
