@@ -1,449 +1,153 @@
-import os
-from typing import Optional, Dict, List
-from opentelemetry import trace, logs
-from opentelemetry.logs import Severity
-from pathlib import Path
-import json
-from datetime import datetime
-from jinja2 import Environment, FileSystemLoader
-from ..models.job import Transcription, Speaker, Segment
-from .storage import StorageService
+"""Viewer service."""
 
-logger = logs.get_logger(__name__)
+import logging
+from pathlib import Path
+from typing import Dict, Optional, BinaryIO
+from ..utils.logging import log_info, log_error, log_warning
+from ..utils.metrics import (
+    VIEW_DURATION,
+    VIEW_ERRORS,
+    VIEWER_CACHE_SIZE,
+    track_view,
+    track_view_error,
+    track_cache_size
+)
 
 class ViewerService:
-    def __init__(self, storage: Optional[StorageService] = None):
-        """Initialize viewer service"""
-        # Get configuration
-        self.template_dir = Path(os.getenv("TEMPLATE_DIR", "src/templates"))
-        self.asset_dir = Path(os.getenv("ASSET_DIR", "src/assets"))
-        
-        # Initialize Jinja environment
-        self.env = Environment(
-            loader=FileSystemLoader(self.template_dir),
-            autoescape=True
-        )
-        
-        # Register filters
-        self.env.filters['format_timestamp'] = self._format_timestamp
-        self.env.filters['format_duration'] = self._format_duration
-        
-        # Load templates
-        self.editor_template = self.env.get_template("editor.html")
-        self.viewer_template = self.env.get_template("viewer.html")
-        
-        # Initialize storage
-        self.storage = storage or StorageService()
-        
-        logger.emit(
-            "Viewer service initialized",
-            severity=Severity.INFO,
-            attributes={
-                "template_dir": str(self.template_dir),
-                "asset_dir": str(self.asset_dir)
-            }
-        )
+    """Service for viewing and managing transcriptions."""
 
-    async def create_editor(
-        self,
-        user_id: str,
-        job_id: str,
-        transcription: Transcription,
-        audio_url: str
-    ) -> str:
-        """Create editor HTML"""
+    def __init__(self, settings):
+        """Initialize viewer service."""
+        self.settings = settings
+        self.initialized = False
+
+    async def initialize(self):
+        """Initialize the service."""
+        if self.initialized:
+            return
+
         try:
-            # Load editor assets
-            css = await self._load_asset("editor.css")
-            js = await self._load_asset("editor.js")
-            
-            # Render template
-            html = self.editor_template.render(
-                user_id=user_id,
-                job_id=job_id,
-                transcription=transcription,
-                audio_url=audio_url,
-                css=css,
-                js=js,
-                timestamp=datetime.utcnow().isoformat()
-            )
-            
-            return html
-            
+            # Initialize viewer settings
+            self.cache_size = int(self.settings.get('viewer_cache_size', 100))
+            self.cache_dir = Path(self.settings.get('viewer_cache_dir', '/tmp/viewer'))
+            self.max_file_size = int(self.settings.get('max_view_size', 10485760))  # 10MB
+
+            # Create cache directory if it doesn't exist
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+            self.initialized = True
+            log_info("Viewer service initialized")
+
         except Exception as e:
-            logger.emit(
-                "Failed to create editor",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id,
-                    "job_id": job_id
-                }
-            )
+            log_error(f"Failed to initialize viewer service: {str(e)}")
             raise
 
-    async def create_viewer(
-        self,
-        user_id: str,
-        job_id: str,
-        transcription: Transcription,
-        audio_url: str,
-        options: Optional[Dict] = None
-    ) -> str:
-        """Create viewer HTML"""
+    async def cleanup(self):
+        """Clean up the service."""
         try:
-            # Set default options
-            if not options:
-                options = {
-                    "combine_speakers": True,
-                    "show_timestamps": True,
-                    "include_foreign": True,
-                    "max_segment_length": 500
-                }
-            
-            # Process transcription
-            segments = await self._process_segments(
-                transcription.segments,
-                options
-            )
-            
-            # Load viewer assets
-            css = await self._load_asset("viewer.css")
-            js = await self._load_asset("viewer.js")
-            
-            # Render template
-            html = self.viewer_template.render(
-                user_id=user_id,
-                job_id=job_id,
-                segments=segments,
-                speakers=transcription.speakers,
-                audio_url=audio_url,
-                options=options,
-                css=css,
-                js=js,
-                timestamp=datetime.utcnow().isoformat()
-            )
-            
-            return html
-            
+            self.initialized = False
+            log_info("Viewer service cleaned up")
+
         except Exception as e:
-            logger.emit(
-                "Failed to create viewer",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id,
-                    "job_id": job_id
-                }
-            )
+            log_error(f"Error during viewer service cleanup: {str(e)}")
             raise
 
-    async def save_editor_state(
-        self,
-        user_id: str,
-        job_id: str,
-        state: Dict
-    ):
-        """Save editor state"""
+    async def view_file(self, file_id: str) -> Dict:
+        """View a file's transcription."""
+        start_time = logging.time()
         try:
-            # Store state
-            await self.storage.store_file(
-                user_id,
-                json.dumps(state).encode(),
-                f"{job_id}_editor.json",
-                "temp"
-            )
+            # Get file data
+            file_data = await self._get_file_data(file_id)
             
-            logger.emit(
-                "Saved editor state",
-                severity=Severity.INFO,
-                attributes={
-                    "user_id": user_id,
-                    "job_id": job_id
-                }
-            )
+            # Track view metrics
+            duration = logging.time() - start_time
+            VIEW_DURATION.observe(duration)
+            track_view(duration)
             
+            log_info(f"Viewed file {file_id}")
+            return file_data
+
         except Exception as e:
-            logger.emit(
-                "Failed to save editor state",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id,
-                    "job_id": job_id
-                }
-            )
+            VIEW_ERRORS.inc()
+            track_view_error()
+            log_error(f"Error viewing file {file_id}: {str(e)}")
             raise
 
-    async def load_editor_state(
-        self,
-        user_id: str,
-        job_id: str
-    ) -> Optional[Dict]:
-        """Load editor state"""
+    async def cache_file(self, file_id: str, data: Dict):
+        """Cache file data for faster viewing."""
         try:
-            # Get state file
-            data = await self.storage.retrieve_file(
-                user_id,
-                f"{job_id}_editor.json",
-                "temp"
-            )
+            # Cache the file
+            await self._write_to_cache(file_id, data)
             
-            return json.loads(data) if data else None
+            # Track cache metrics
+            cache_size = await self._get_cache_size()
+            VIEWER_CACHE_SIZE.set(cache_size)
+            track_cache_size(cache_size)
             
-        except Exception as e:
-            logger.emit(
-                "Failed to load editor state",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id,
-                    "job_id": job_id
-                }
-            )
-            return None
+            log_info(f"Cached file {file_id}")
 
-    async def export_text(
-        self,
-        transcription: Transcription,
-        options: Optional[Dict] = None
-    ) -> str:
-        """Export transcription as text"""
-        try:
-            # Set default options
-            if not options:
-                options = {
-                    "combine_speakers": True,
-                    "show_timestamps": True,
-                    "include_foreign": True,
-                    "max_segment_length": 500
-                }
-            
-            # Process segments
-            segments = await self._process_segments(
-                transcription.segments,
-                options
-            )
-            
-            # Build text
-            text = []
-            current_speaker = None
-            
-            for segment in segments:
-                # Add speaker header
-                if segment["speaker"] != current_speaker:
-                    current_speaker = segment["speaker"]
-                    if options["show_timestamps"]:
-                        text.append(f"\n{current_speaker} ({segment['timestamp']}):")
-                    else:
-                        text.append(f"\n{current_speaker}:")
-                
-                # Add text
-                text.append(segment["text"])
-            
-            return "\n".join(text)
-            
         except Exception as e:
-            logger.emit(
-                "Failed to export text",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "options": str(options)
-                }
-            )
+            log_error(f"Error caching file {file_id}: {str(e)}")
             raise
 
-    async def export_srt(
-        self,
-        transcription: Transcription,
-        options: Optional[Dict] = None
-    ) -> str:
-        """Export transcription as SRT"""
+    async def clear_cache(self, file_id: Optional[str] = None):
+        """Clear viewer cache."""
         try:
-            # Set default options
-            if not options:
-                options = {
-                    "combine_speakers": False,
-                    "include_foreign": True,
-                    "max_line_length": 42
-                }
-            
-            # Process segments
-            segments = await self._process_segments(
-                transcription.segments,
-                options
-            )
-            
-            # Build SRT
-            srt = []
-            for i, segment in enumerate(segments, 1):
-                # Add index
-                srt.append(str(i))
-                
-                # Add timecode
-                start = self._format_timecode(segment["start"])
-                end = self._format_timecode(segment["end"])
-                srt.append(f"{start} --> {end}")
-                
-                # Add text
-                if options["combine_speakers"]:
-                    text = segment["text"]
-                else:
-                    text = f"{segment['speaker']}: {segment['text']}"
-                
-                # Split long lines
-                if options["max_line_length"]:
-                    text = self._split_lines(text, options["max_line_length"])
-                
-                srt.append(text)
-                srt.append("")
-            
-            return "\n".join(srt)
-            
-        except Exception as e:
-            logger.emit(
-                "Failed to export SRT",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "options": str(options)
-                }
-            )
-            raise
-
-    async def _process_segments(
-        self,
-        segments: List[Segment],
-        options: Dict
-    ) -> List[Dict]:
-        """Process segments according to options"""
-        try:
-            processed = []
-            current_speaker = None
-            current_text = []
-            current_start = None
-            
-            for segment in segments:
-                # Skip foreign segments if disabled
-                if not options["include_foreign"]:
-                    if segment.language not in ["de", "en"]:
-                        continue
-                
-                # Combine segments from same speaker
-                if options["combine_speakers"]:
-                    if segment.speaker_idx == current_speaker:
-                        current_text.append(segment.text)
-                        continue
-                    elif current_text:
-                        processed.append({
-                            "speaker": f"Speaker {current_speaker + 1}",
-                            "text": " ".join(current_text),
-                            "timestamp": self._format_timestamp(current_start),
-                            "start": current_start,
-                            "end": segment.start
-                        })
-                
-                # Start new segment
-                current_speaker = segment.speaker_idx
-                current_text = [segment.text]
-                current_start = segment.start
-                
-                if not options["combine_speakers"]:
-                    processed.append({
-                        "speaker": f"Speaker {segment.speaker_idx + 1}",
-                        "text": segment.text,
-                        "timestamp": self._format_timestamp(segment.start),
-                        "start": segment.start,
-                        "end": segment.end
-                    })
-            
-            # Add final combined segment
-            if options["combine_speakers"] and current_text:
-                processed.append({
-                    "speaker": f"Speaker {current_speaker + 1}",
-                    "text": " ".join(current_text),
-                    "timestamp": self._format_timestamp(current_start),
-                    "start": current_start,
-                    "end": segments[-1].end
-                })
-            
-            return processed
-            
-        except Exception as e:
-            logger.emit(
-                "Failed to process segments",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "options": str(options),
-                    "segment_count": len(segments)
-                }
-            )
-            raise
-
-    async def _load_asset(self, filename: str) -> str:
-        """Load asset file"""
-        try:
-            path = self.asset_dir / filename
-            with open(path) as f:
-                return f.read()
-                
-        except Exception as e:
-            logger.emit(
-                "Failed to load asset",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "filename": filename,
-                    "path": str(self.asset_dir / filename)
-                }
-            )
-            raise
-
-    def _format_timestamp(self, seconds: float) -> str:
-        """Format timestamp as HH:MM:SS"""
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        seconds = int(seconds % 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-    def _format_duration(self, seconds: float) -> str:
-        """Format duration as HH:MM:SS"""
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        seconds = int(seconds % 60)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-    def _format_timecode(self, seconds: float) -> str:
-        """Format timecode as HH:MM:SS,mmm"""
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        seconds = int(seconds % 60)
-        milliseconds = int((seconds % 1) * 1000)
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
-
-    def _split_lines(self, text: str, max_length: int) -> str:
-        """Split text into lines of maximum length"""
-        if len(text) <= max_length:
-            return text
-            
-        words = text.split()
-        lines = []
-        current_line = []
-        current_length = 0
-        
-        for word in words:
-            word_length = len(word) + 1  # Add space
-            if current_length + word_length > max_length:
-                lines.append(" ".join(current_line))
-                current_line = [word]
-                current_length = word_length
+            if file_id:
+                # Clear specific file
+                await self._remove_from_cache(file_id)
+                log_info(f"Cleared cache for file {file_id}")
             else:
-                current_line.append(word)
-                current_length += word_length
-        
-        if current_line:
-            lines.append(" ".join(current_line))
-        
-        return "\n".join(lines)
+                # Clear all cache
+                await self._clear_all_cache()
+                VIEWER_CACHE_SIZE.set(0)
+                log_info("Cleared all viewer cache")
+
+        except Exception as e:
+            log_error(f"Error clearing cache: {str(e)}")
+            raise
+
+    async def get_cache_stats(self) -> Dict:
+        """Get cache statistics."""
+        try:
+            stats = await self._get_cache_stats()
+            log_info("Retrieved cache stats", extra=stats)
+            return stats
+
+        except Exception as e:
+            log_error(f"Error getting cache stats: {str(e)}")
+            raise
+
+    async def _get_file_data(self, file_id: str) -> Dict:
+        """Get file data from cache or storage."""
+        # Implementation would fetch from cache or storage
+        return {}
+
+    async def _write_to_cache(self, file_id: str, data: Dict):
+        """Write file data to cache."""
+        # Implementation would write to cache
+        pass
+
+    async def _remove_from_cache(self, file_id: str):
+        """Remove file from cache."""
+        # Implementation would remove from cache
+        pass
+
+    async def _clear_all_cache(self):
+        """Clear all cached files."""
+        # Implementation would clear cache
+        pass
+
+    async def _get_cache_size(self) -> int:
+        """Get current cache size."""
+        # Implementation would get cache size
+        return 0
+
+    async def _get_cache_stats(self) -> Dict:
+        """Get cache statistics."""
+        # Implementation would get cache stats
+        return {
+            'size': 0,
+            'files': 0,
+            'hit_rate': 0.0
+        }

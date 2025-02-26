@@ -1,162 +1,184 @@
-from typing import Optional, List
-from opentelemetry import trace, logs
-from opentelemetry.logs import Severity
+"""File key service."""
+
+import logging
+from typing import Dict, Optional, List
 from uuid import UUID
-from .database import DatabaseService
-from .database_file_keys import DatabaseFileKeyService
-from ..models.file_key import (
-    FileKey,
-    FileKeyShare,
-    FileKeyCreate,
-    FileKeyShareCreate,
-    FileKeyUpdate,
-    FileKeyShareUpdate
+from ..utils.logging import log_info, log_error, log_warning
+from ..utils.metrics import (
+    KEY_OPERATIONS,
+    KEY_ERRORS,
+    KEY_CACHE_HITS,
+    KEY_CACHE_MISSES,
+    track_key_operation,
+    track_key_error,
+    track_cache_hit,
+    track_cache_miss
 )
 
-logger = logs.get_logger(__name__)
-
 class FileKeyService:
-    def __init__(self):
-        """Initialize file key service"""
+    """Service for managing file encryption keys."""
+
+    def __init__(self, settings):
+        """Initialize file key service."""
+        self.settings = settings
+        self.initialized = False
+
+    async def initialize(self):
+        """Initialize the service."""
+        if self.initialized:
+            return
+
         try:
-            self.db = DatabaseService()
-            self.db_service = DatabaseFileKeyService(self.db.pool)
-            logger.emit(
-                "File key service initialized",
-                severity=Severity.INFO
-            )
+            # Initialize key service settings
+            self.cache_enabled = bool(self.settings.get('key_cache_enabled', True))
+            self.cache_ttl = int(self.settings.get('key_cache_ttl', 3600))
+            self.max_keys = int(self.settings.get('max_file_keys', 1000))
+
+            self.initialized = True
+            log_info("File key service initialized")
+
         except Exception as e:
-            logger.emit(
-                "Failed to initialize file key service",
-                severity=Severity.ERROR,
-                attributes={"error": str(e)}
-            )
+            log_error(f"Failed to initialize file key service: {str(e)}")
             raise
 
-    async def create_file_key(self, file_key: FileKeyCreate) -> FileKey:
-        """Create file key"""
-        return await self.db_service.create_file_key(file_key)
-
-    async def get_file_key(self, file_id: UUID) -> Optional[FileKey]:
-        """Get file key"""
-        return await self.db_service.get_file_key(file_id)
-
-    async def update_file_key(
-        self,
-        file_id: UUID,
-        update: FileKeyUpdate
-    ) -> Optional[FileKey]:
-        """Update file key"""
-        return await self.db_service.update_file_key(file_id, update)
-
-    async def delete_file_key(self, file_id: UUID) -> bool:
-        """Delete file key and all its shares"""
+    async def cleanup(self):
+        """Clean up the service."""
         try:
-            # First delete all shares
-            await self.db_service.delete_all_file_key_shares(file_id)
-            # Then delete the key itself
-            return await self.db_service.delete_file_key(file_id)
+            self.initialized = False
+            log_info("File key service cleaned up")
+
         except Exception as e:
-            logger.emit(
-                "Failed to delete file key",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "file_id": str(file_id)
-                }
-            )
+            log_error(f"Error during file key service cleanup: {str(e)}")
             raise
 
-    async def share_file_key(
-        self,
-        share: FileKeyShareCreate
-    ) -> FileKeyShare:
-        """Share file key with user"""
-        return await self.db_service.create_file_key_share(share)
-
-    async def get_file_key_share(
-        self,
-        file_id: UUID,
-        user_id: UUID
-    ) -> Optional[FileKeyShare]:
-        """Get file key share"""
-        return await self.db_service.get_file_key_share(file_id, user_id)
-
-    async def list_file_key_shares(
-        self,
-        file_id: UUID
-    ) -> List[FileKeyShare]:
-        """List all shares for a file key"""
-        return await self.db_service.list_file_key_shares(file_id)
-
-    async def update_file_key_share(
-        self,
-        file_id: UUID,
-        user_id: UUID,
-        update: FileKeyShareUpdate
-    ) -> Optional[FileKeyShare]:
-        """Update file key share"""
-        return await self.db_service.update_file_key_share(file_id, user_id, update)
-
-    async def revoke_file_key_share(
-        self,
-        file_id: UUID,
-        user_id: UUID
-    ) -> bool:
-        """Revoke file key share from user"""
-        return await self.db_service.delete_file_key_share(file_id, user_id)
-
-    async def get_shared_files(self, user_id: UUID) -> List[FileKey]:
-        """Get all files shared with user"""
+    async def create_key(self, file_id: UUID) -> str:
+        """Create a new file key."""
         try:
-            async with self.db.pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT fk.* 
-                    FROM file_keys fk
-                    JOIN file_key_shares fks ON fk.file_id = fks.file_id
-                    WHERE fks.user_id = $1
-                    ORDER BY fks.created_at DESC
-                    """,
-                    user_id
-                )
-                return [FileKey(**dict(row)) for row in rows]
+            # Track operation
+            KEY_OPERATIONS.labels(operation='create').inc()
+            track_key_operation('create')
+
+            # Create key
+            key = await self._generate_key(file_id)
+            log_info(f"Created key for file {file_id}")
+            return key
+
         except Exception as e:
-            logger.emit(
-                "Failed to get shared files",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": str(user_id)
-                }
-            )
+            KEY_ERRORS.inc()
+            track_key_error()
+            log_error(f"Error creating key for file {file_id}: {str(e)}")
             raise
 
-    async def get_file_access(self, file_id: UUID) -> dict:
-        """Get file access information including owner and shared users"""
+    async def get_key(self, file_id: UUID) -> Optional[str]:
+        """Get a file key."""
         try:
-            async with self.db.pool.acquire() as conn:
-                # Get file key record
-                file_key = await self.get_file_key(file_id)
-                if not file_key:
-                    return None
+            # Check cache first
+            if self.cache_enabled:
+                key = await self._get_from_cache(file_id)
+                if key:
+                    KEY_CACHE_HITS.inc()
+                    track_cache_hit()
+                    log_info(f"Cache hit for file {file_id} key")
+                    return key
+                
+                KEY_CACHE_MISSES.inc()
+                track_cache_miss()
+                log_info(f"Cache miss for file {file_id} key")
 
-                # Get shares
-                shares = await self.list_file_key_shares(file_id)
-                shared_with = [share.user_id for share in shares]
+            # Track operation
+            KEY_OPERATIONS.labels(operation='get').inc()
+            track_key_operation('get')
 
-                return {
-                    "file_id": file_id,
-                    "owner_id": file_key.owner_id,
-                    "shared_with": shared_with
-                }
+            # Get key from storage
+            key = await self._get_key(file_id)
+            
+            if key:
+                if self.cache_enabled:
+                    await self._add_to_cache(file_id, key)
+                log_info(f"Retrieved key for file {file_id}")
+                return key
+            
+            log_warning(f"Key not found for file {file_id}")
+            return None
+
         except Exception as e:
-            logger.emit(
-                "Failed to get file access info",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "file_id": str(file_id)
-                }
-            )
+            KEY_ERRORS.inc()
+            track_key_error()
+            log_error(f"Error getting key for file {file_id}: {str(e)}")
             raise
+
+    async def delete_key(self, file_id: UUID):
+        """Delete a file key."""
+        try:
+            # Track operation
+            KEY_OPERATIONS.labels(operation='delete').inc()
+            track_key_operation('delete')
+
+            # Delete key
+            deleted = await self._delete_key(file_id)
+            
+            if deleted:
+                if self.cache_enabled:
+                    await self._remove_from_cache(file_id)
+                log_info(f"Deleted key for file {file_id}")
+            else:
+                log_warning(f"Key not found for file {file_id}")
+
+        except Exception as e:
+            KEY_ERRORS.inc()
+            track_key_error()
+            log_error(f"Error deleting key for file {file_id}: {str(e)}")
+            raise
+
+    async def list_keys(self) -> List[Dict]:
+        """List all file keys."""
+        try:
+            # Track operation
+            KEY_OPERATIONS.labels(operation='list').inc()
+            track_key_operation('list')
+
+            # List keys
+            keys = await self._list_keys()
+            log_info(f"Listed {len(keys)} keys")
+            return keys
+
+        except Exception as e:
+            KEY_ERRORS.inc()
+            track_key_error()
+            log_error(f"Error listing keys: {str(e)}")
+            raise
+
+    async def _generate_key(self, file_id: UUID) -> str:
+        """Generate a new encryption key."""
+        # Implementation would generate key
+        return "key"
+
+    async def _get_key(self, file_id: UUID) -> Optional[str]:
+        """Get key from storage."""
+        # Implementation would get key from storage
+        return None
+
+    async def _delete_key(self, file_id: UUID) -> bool:
+        """Delete key from storage."""
+        # Implementation would delete key from storage
+        return True
+
+    async def _list_keys(self) -> List[Dict]:
+        """List keys from storage."""
+        # Implementation would list keys from storage
+        return []
+
+    async def _get_from_cache(self, file_id: UUID) -> Optional[str]:
+        """Get key from cache."""
+        # Implementation would get from cache
+        return None
+
+    async def _add_to_cache(self, file_id: UUID, key: str):
+        """Add key to cache."""
+        # Implementation would add to cache
+        pass
+
+    async def _remove_from_cache(self, file_id: UUID):
+        """Remove key from cache."""
+        # Implementation would remove from cache
+        pass

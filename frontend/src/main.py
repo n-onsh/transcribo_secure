@@ -4,13 +4,36 @@ from fastapi import FastAPI, Request, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import make_asgi_app
 
 from .components.upload import UploadComponent
+from .routes import editor, tags, auth
+from .utils import setup_metrics
+from .utils.logging import setup_logging
 
+# Configure logging
+setup_logging()
+
+# Create FastAPI app
 app = FastAPI()
 
-# Mount static files
+# Include routes
+app.include_router(auth.router)
+app.include_router(editor.router)
+app.include_router(tags.router)
+
+# Mount static files and assets
 app.mount("/static", StaticFiles(directory="src/static"), name="static")
+app.mount("/assets", StaticFiles(directory="backend/src/assets"), name="assets")
+
+# Create metrics app
+metrics_app = make_asgi_app()
+
+# Mount metrics endpoint
+app.mount("/metrics", metrics_app)
+
+# Set up metrics
+setup_metrics()
 
 # Initialize templates
 templates = Jinja2Templates(directory="src/templates")

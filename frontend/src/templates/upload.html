@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Upload</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
     <style>
         .tooltip-icon {
@@ -53,7 +53,7 @@
             background-color: rgba(13, 110, 253, 0.05);
         }
         .file-list {
-            max-height: 200px;
+            max-height: 300px;
             overflow-y: auto;
         }
         .file-item {
@@ -73,9 +73,26 @@
             color: #6c757d;
             margin-right: 1rem;
         }
+        .hash-info {
+            font-family: monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
+            margin-right: 1rem;
+            flex-grow: 2;
+        }
+        .hash-verified {
+            color: #198754;
+        }
+        .hash-unverified {
+            color: #dc3545;
+        }
+        .hash-pending {
+            color: #6c757d;
+        }
         .remove-file {
             color: #dc3545;
             cursor: pointer;
+            margin-left: 1rem;
         }
         .remove-file:hover {
             color: #b02a37;
@@ -122,6 +139,14 @@
                             {% for type in file_types %}
                             <span class="badge bg-secondary me-2">{{ type.extension }}</span>
                             {% endfor %}
+                            <span class="badge bg-primary me-2">ZIP</span>
+                            
+                            <div class="alert alert-info mt-2">
+                                <i class="bi bi-info-circle me-2"></i>
+                                <strong>ZIP Files:</strong> You can upload a ZIP file containing multiple audio/video files. 
+                                Files will be combined in alphabetical order. Make sure to name your files accordingly 
+                                (e.g., 001_intro.mp3, 002_main.mp3).
+                            </div>
                         </div>
 
                         <!-- Upload Area -->
@@ -239,20 +264,57 @@
             fileInput.value = '';
         });
         
-        function handleFiles(fileList) {
-            Array.from(fileList).forEach(file => {
+        // Function to calculate file hash
+        async function calculateHash(file) {
+            const reader = new FileReader();
+            return new Promise((resolve, reject) => {
+                reader.onload = async (event) => {
+                    try {
+                        const arrayBuffer = event.target.result;
+                        const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+                        const hashArray = Array.from(new Uint8Array(hashBuffer));
+                        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+                        resolve(hashHex);
+                    } catch (error) {
+                        reject(error);
+                    }
+                };
+                reader.onerror = reject;
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        async function handleFiles(fileList) {
+            for (const file of Array.from(fileList)) {
                 const isZip = file.name.toLowerCase().endsWith('.zip');
                 const errors = validateFile(file, isZip);
                 
                 if (errors.length > 0) {
                     showErrors(errors);
-                    return;
+                    continue;
                 }
-                
-                files.add(file);
-                updateFileList();
-                updateUploadButton();
-            });
+
+                try {
+                    // Show hash calculation progress
+                    validationErrors.innerHTML = `<div class="text-info">Calculating hash for ${file.name}...</div>`;
+                    
+                    // Calculate file hash
+                    const hash = await calculateHash(file);
+                    
+                    // Store file with hash
+                    files.add({
+                        file,
+                        hash,
+                        hashAlgorithm: 'sha256'
+                    });
+                    
+                    updateFileList();
+                    updateUploadButton();
+                } catch (error) {
+                    showErrors([`Failed to calculate hash for ${file.name}: ${error.message}`]);
+                }
+            }
+            validationErrors.innerHTML = '';
         }
         
         function validateFile(file, isZip) {
@@ -280,29 +342,38 @@
         
         function updateFileList() {
             fileList.innerHTML = '';
-            files.forEach(file => {
+            files.forEach(fileData => {
                 const div = document.createElement('div');
                 div.className = 'file-item';
                 
                 const name = document.createElement('div');
                 name.className = 'file-name';
-                name.textContent = file.name;
+                name.textContent = fileData.file.name;
                 
                 const size = document.createElement('div');
                 size.className = 'file-size';
-                size.textContent = formatSize(file.size);
+                size.textContent = formatSize(fileData.file.size);
+
+                const hash = document.createElement('div');
+                hash.className = 'hash-info';
+                hash.innerHTML = `
+                    <small class="text-muted">Hash:</small>
+                    <span class="hash-value">${fileData.hash}</span>
+                    <i class="bi bi-shield-check text-success ms-1" title="Hash calculated"></i>
+                `;
                 
                 const remove = document.createElement('div');
                 remove.className = 'remove-file';
                 remove.innerHTML = '<i class="bi bi-x-circle"></i>';
                 remove.onclick = () => {
-                    files.delete(file);
+                    files.delete(fileData);
                     updateFileList();
                     updateUploadButton();
                 };
                 
                 div.appendChild(name);
                 div.appendChild(size);
+                div.appendChild(hash);
                 div.appendChild(remove);
                 fileList.appendChild(div);
             });
@@ -335,28 +406,29 @@
             uploadBtn.disabled = true;
             
             try {
-                for (const file of files) {
+                let fileIndex = 0;
+                for (const fileData of files) {
                     const formData = new FormData();
-                    formData.append('file', file);
+                    formData.append('file', fileData.file);
                     formData.append('language', languageSelect.value);
+                    formData.append('hash', fileData.hash);
+                    formData.append('hash_algorithm', fileData.hashAlgorithm);
                     
-                    const response = await fetch(
-                        file.name.toLowerCase().endsWith('.zip') ? '/api/zip/upload' : '/api/files/upload',
-                        {
-                            method: 'POST',
-                            body: formData,
-                            headers: {
-                                'Accept': 'application/json'
-                            }
+                    const response = await fetch('/api/files/upload', {
+                        method: 'POST',
+                        body: formData,
+                        headers: {
+                            'Accept': 'application/json'
                         }
-                    );
+                    });
                     
                     if (!response.ok) {
                         const error = await response.json();
                         throw new Error(error.detail || 'Upload failed');
                     }
                     
-                    const progress = (Array.from(files).indexOf(file) + 1) / files.size * 100;
+                    fileIndex++;
+                    const progress = (fileIndex / files.size) * 100;
                     progressBarInner.style.width = `${progress}%`;
                     progressLabel.textContent = `${Math.round(progress)}%`;
                 }

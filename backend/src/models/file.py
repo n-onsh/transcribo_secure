@@ -13,6 +13,8 @@ class FileMetadata(BaseModel):
     size_bytes: int
     content_type: Optional[str] = None
     updated_at: Optional[datetime] = None
+    hash: Optional[str] = None
+    hash_algorithm: Optional[str] = "sha256"
     
     class Config:
         orm_mode = True
@@ -28,6 +30,8 @@ class FileResponse(BaseModel):
         ge=0.0,
         le=100.0
     )
+    hash: Optional[str] = Field(None, description="File hash")
+    hash_algorithm: Optional[str] = Field("sha256", description="Hash algorithm used")
     created_at: datetime = Field(..., description="Creation timestamp")
     completed_at: Optional[datetime] = Field(None, description="Completion timestamp")
     error: Optional[str] = Field(None, description="Error message if failed")

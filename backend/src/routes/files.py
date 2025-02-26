@@ -1,14 +1,17 @@
+"""File routes."""
+
 import os
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
 from typing import List, Optional, Dict, Any
-from ..utils.logging import tracer, log_error
+from ..utils.logging import log_error
+from ..utils.hash_verification import calculate_data_hash, verify_file_hash, HashVerificationError
 from ..models.file import FileResponse
 from ..models.job import TranscriptionOptions
 from ..services.interfaces import StorageInterface, JobManagerInterface
 from ..services.provider import service_provider
+from ..services.zip_handler import ZipHandlerService
 from ..utils.exceptions import ResourceNotFoundError, AuthorizationError
 from ..utils.metrics import track_time, track_errors, DB_OPERATION_DURATION
-
 
 router = APIRouter(
     prefix="/files",
@@ -20,7 +23,7 @@ router = APIRouter(
     response_model=FileResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload File",
-    description="Upload an audio/video file for transcription with progress tracking"
+    description="Upload an audio/video file or ZIP containing audio/video files for transcription"
 )
 @track_time(DB_OPERATION_DURATION, {"operation": "upload_file"})
 async def upload_file(
@@ -34,17 +37,55 @@ async def upload_file(
         # Get required services
         storage = service_provider.get(StorageInterface)
         job_manager = service_provider.get(JobManagerInterface)
-        if not storage or not job_manager:
+        zip_handler = service_provider.get(ZipHandlerService)
+        
+        if not storage or not job_manager or not zip_handler:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Service unavailable"
             )
 
-        # Validate file type
-        allowed_types = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
-        ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in allowed_types:
-            raise ValueError(f"Invalid file type. Allowed types: {', '.join(allowed_types)}")
+        # Read file data and calculate hash
+        file_data = await file.read()
+        hash_algorithm = "sha256"
+        file_hash = calculate_data_hash(file_data)
+
+        # Save uploaded file temporarily
+        temp_path = os.path.join("/tmp", file.filename)
+        with open(temp_path, "wb") as f:
+            f.write(file_data)
+
+        # Verify hash after writing
+        if not verify_file_hash(temp_path, file_hash, hash_algorithm):
+            # If verification fails, delete file and raise error
+            os.remove(temp_path)
+            raise HashVerificationError("File hash verification failed after storage")
+
+        # Check if it's a ZIP file
+        if zip_handler.is_zip_file(file.filename):
+            # Process ZIP file
+            try:
+                zip_result = await zip_handler.process_zip_file(temp_path, str(user_id))
+                file_path = zip_result["combined_file"]
+                metadata = {
+                    "original_files": zip_result["original_files"],
+                    "is_combined": zip_result["is_combined"]
+                }
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(e)
+                )
+        else:
+            # Validate single file type
+            if not zip_handler.is_supported_audio_file(file.filename):
+                allowed_types = zip_handler.supported_audio_extensions
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid file type. Allowed types: {', '.join(allowed_types)} or ZIP"
+                )
+            file_path = temp_path
+            metadata = {"is_combined": False}
 
         # Create transcription options
         options = TranscriptionOptions(
@@ -52,19 +93,27 @@ async def upload_file(
             vocabulary=vocabulary.split(",") if vocabulary else []
         )
 
-        # Create transcription job with streaming upload
+        # Create transcription job
         try:
-            job = await job_manager.create_job(
-                user_id=user_id,
-                file_data=file.file,  # Pass file object directly for streaming
-                file_name=file.filename,
-                options=options
-            )
+            with open(file_path, "rb") as f:
+                job = await job_manager.create_job(
+                    user_id=user_id,
+                    file_data=f,
+                    file_name=file.filename,
+                    options=options,
+                    metadata=metadata
+                )
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e)
             )
+        finally:
+            # Clean up temporary files
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            if file_path != temp_path and os.path.exists(file_path):
+                os.remove(file_path)
 
         return FileResponse(
             id=job.id,
@@ -73,7 +122,9 @@ async def upload_file(
             created_at=job.created_at,
             progress=job.progress,
             language=job.options.language,
-            supported_languages=job.options.supported_languages
+            supported_languages=job.options.supported_languages,
+            hash=file_hash,
+            hash_algorithm=hash_algorithm
         )
 
     except ValueError as e:

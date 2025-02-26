@@ -1,35 +1,33 @@
-"""Centralized logging utilities using OpenTelemetry"""
+"""Logging utilities."""
 
-from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
+import logging
+import json
+from typing import Dict, Optional
 
-# Create tracer for logging
-tracer = trace.get_tracer(__name__)
+def setup_logging():
+    """Set up logging configuration."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
-def log_error(error_msg: str, attributes: dict = None, span=None):
-    """Log an error with OpenTelemetry tracing"""
-    if span is None:
-        span = trace.get_current_span()
-    
-    if attributes:
-        span.set_attributes(attributes)
-    span.set_attribute("error", error_msg)
-    span.set_status(Status(StatusCode.ERROR))
+def log_info(msg: str, attrs: Optional[Dict] = None):
+    """Log info message with attributes."""
+    logger = logging.getLogger("transcribo")
+    if attrs:
+        msg = f"{msg} - {json.dumps(attrs)}"
+    logger.info(msg)
 
-def log_info(msg: str, attributes: dict = None, span=None):
-    """Log info with OpenTelemetry tracing"""
-    if span is None:
-        span = trace.get_current_span()
-    
-    if attributes:
-        span.set_attributes(attributes)
-    span.set_attribute("message", msg)
+def log_error(error_msg: str, attrs: Optional[Dict] = None):
+    """Log error message with attributes."""
+    logger = logging.getLogger("transcribo")
+    if attrs:
+        error_msg = f"{error_msg} - {json.dumps(attrs)}"
+    logger.error(error_msg)
 
-def log_warning(msg: str, attributes: dict = None, span=None):
-    """Log warning with OpenTelemetry tracing"""
-    if span is None:
-        span = trace.get_current_span()
-    
-    if attributes:
-        span.set_attributes(attributes)
-    span.set_attribute("warning", msg)
+def log_warning(msg: str, attrs: Optional[Dict] = None):
+    """Log warning message with attributes."""
+    logger = logging.getLogger("transcribo")
+    if attrs:
+        msg = f"{msg} - {json.dumps(attrs)}"
+    logger.warning(msg)

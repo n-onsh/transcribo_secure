@@ -1,304 +1,120 @@
-import os
-from typing import List, Optional, Dict, Set
-from opentelemetry import trace, logs
-from opentelemetry.logs import Severity
-import json
-from pathlib import Path
-from datetime import datetime
-from ..models.vocabulary import VocabularyList, VocabularyEntry, VocabularyUpdate
+"""Vocabulary service."""
 
-logger = logs.get_logger(__name__)
+import re
+from typing import Dict, List, Optional
+from ..utils.logging import log_info, log_error
+from .job_manager import JobManager
+from .transcription import TranscriptionService
+from .interfaces import VocabularyInterface
 
-class VocabularyService:
-    def __init__(self):
-        """Initialize vocabulary service"""
-        # Get configuration
-        self.vocab_dir = Path(os.getenv("VOCAB_DIR", "data/vocabulary"))
-        self.max_words = int(os.getenv("MAX_VOCAB_WORDS", "1000"))
-        self.min_word_length = int(os.getenv("MIN_VOCAB_WORD_LENGTH", "2"))
-        
-        # Create directory if needed
-        self.vocab_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Cache for vocabulary lists
-        self._cache: Dict[str, VocabularyList] = {}
-        
-        logger.emit(
-            "Vocabulary service initialized",
-            severity=Severity.INFO,
-            attributes={
-                "vocab_dir": str(self.vocab_dir),
-                "max_words": self.max_words,
-                "min_word_length": self.min_word_length
-            }
-        )
+class VocabularyService(VocabularyInterface):
+    """Service for managing custom vocabulary."""
 
-    async def get_vocabulary(self, user_id: str) -> VocabularyList:
-        """Get user's vocabulary list"""
+    def __init__(self, job_manager: JobManager, transcription_service: TranscriptionService):
+        """Initialize vocabulary service."""
+        self.job_manager = job_manager
+        self.transcription_service = transcription_service
+        self.initialized = False
+        self._vocabulary_store = {}  # In-memory store for demo, would be DB in production
+
+    async def initialize(self):
+        """Initialize the service."""
+        if self.initialized:
+            return
+
         try:
-            # Check cache first
-            if user_id in self._cache:
-                return self._cache[user_id]
+            # Initialize dependencies
+            self.initialized = True
+            log_info("Vocabulary service initialized")
+
+        except Exception as e:
+            log_error(f"Failed to initialize vocabulary service: {str(e)}")
+            raise
+
+    async def cleanup(self):
+        """Clean up the service."""
+        try:
+            self.initialized = False
+            log_info("Vocabulary service cleaned up")
+
+        except Exception as e:
+            log_error(f"Error during vocabulary service cleanup: {str(e)}")
+            raise
+
+    async def apply_vocabulary_to_job(self, job_id: str, vocabulary_items: List[Dict]) -> bool:
+        """Apply custom vocabulary to a transcription job."""
+        try:
+            # Get job
+            job = await self.job_manager.get_job(job_id)
+            if not job:
+                raise ValueError(f"Job {job_id} not found")
             
-            # Load from file
-            vocab_file = self.vocab_dir / f"{user_id}.json"
-            if vocab_file.exists():
-                with open(vocab_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    vocab = VocabularyList.parse_obj(data)
-            else:
-                # Create new list
-                vocab = VocabularyList(
-                    user_id=user_id,
-                    words=[],
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow()
+            # Store vocabulary items for this job
+            await self.store_job_vocabulary(job_id, vocabulary_items)
+            
+            # If job is already completed, apply vocabulary to existing transcription
+            if job.status == "completed":
+                transcription = await self.transcription_service.get_transcription(job.file_id)
+                updated_transcription = await self.apply_vocabulary_to_transcription(
+                    transcription, vocabulary_items
                 )
+                await self.transcription_service.save_transcription(job.file_id, updated_transcription)
             
-            # Cache and return
-            self._cache[user_id] = vocab
-            return vocab
-            
+            return True
         except Exception as e:
-            logger.emit(
-                "Failed to get vocabulary",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id
-                }
-            )
+            log_error(f"Error applying vocabulary to job {job_id}: {str(e)}")
+            return False
+
+    async def store_job_vocabulary(self, job_id: str, vocabulary_items: List[Dict]) -> None:
+        """Store vocabulary items for a job."""
+        try:
+            # Store in memory (would be DB in production)
+            self._vocabulary_store[job_id] = vocabulary_items
+            log_info(f"Stored vocabulary items for job {job_id}")
+        except Exception as e:
+            log_error(f"Error storing vocabulary for job {job_id}: {str(e)}")
             raise
 
-    async def update_vocabulary(
-        self,
-        user_id: str,
-        update: VocabularyUpdate
-    ) -> VocabularyList:
-        """Update user's vocabulary list"""
+    async def apply_vocabulary_to_transcription(
+        self, transcription: Dict, vocabulary_items: List[Dict]
+    ) -> Dict:
+        """Apply vocabulary items to an existing transcription."""
         try:
-            # Get current list
-            vocab = await self.get_vocabulary(user_id)
+            # Create a mapping of terms to replacements
+            replacements = {item["term"]: item["replacement"] for item in vocabulary_items}
             
-            # Process words to add
-            if update.add:
-                new_words = set()
-                for word in update.add:
-                    # Clean and validate word
-                    word = word.strip()
-                    if len(word) >= self.min_word_length:
-                        new_words.add(word)
-                
-                # Add new words
-                existing_words = {e.word for e in vocab.words}
-                for word in new_words:
-                    if word not in existing_words:
-                        vocab.words.append(VocabularyEntry(
-                            word=word,
-                            added_at=datetime.utcnow()
-                        ))
-                
-                # Enforce max words limit
-                if len(vocab.words) > self.max_words:
-                    vocab.words = sorted(
-                        vocab.words,
-                        key=lambda e: e.added_at,
-                        reverse=True
-                    )[:self.max_words]
+            # Apply replacements to each segment
+            for segment in transcription.get("segments", []):
+                text = segment.get("text", "")
+                for term, replacement in replacements.items():
+                    # Case-insensitive replacement
+                    pattern = re.compile(re.escape(term), re.IGNORECASE)
+                    text = pattern.sub(replacement, text)
+                segment["text"] = text
             
-            # Process words to remove
-            if update.remove:
-                remove_set = {w.lower() for w in update.remove}
-                vocab.words = [
-                    e for e in vocab.words
-                    if e.word.lower() not in remove_set
-                ]
-            
-            # Update timestamp
-            vocab.updated_at = datetime.utcnow()
-            
-            # Save changes
-            await self._save_vocabulary(vocab)
-            
-            return vocab
-            
+            return transcription
         except Exception as e:
-            logger.emit(
-                "Failed to update vocabulary",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id,
-                    "add_count": len(update.add) if update.add else 0,
-                    "remove_count": len(update.remove) if update.remove else 0
-                }
-            )
+            log_error(f"Error applying vocabulary to transcription: {str(e)}")
             raise
 
-    async def clear_vocabulary(self, user_id: str):
-        """Clear user's vocabulary list"""
+    async def get_job_vocabulary(self, job_id: str) -> List[Dict]:
+        """Get vocabulary items for a job."""
         try:
-            # Create empty list
-            vocab = VocabularyList(
-                user_id=user_id,
-                words=[],
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-            
-            # Save changes
-            await self._save_vocabulary(vocab)
-            
+            # Retrieve from memory (would be DB in production)
+            return self._vocabulary_store.get(job_id, [])
         except Exception as e:
-            logger.emit(
-                "Failed to clear vocabulary",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id
-                }
-            )
+            log_error(f"Error getting vocabulary for job {job_id}: {str(e)}")
             raise
 
-    async def delete_vocabulary(self, user_id: str):
-        """Delete user's vocabulary list"""
+    async def delete_job_vocabulary(self, job_id: str) -> bool:
+        """Delete vocabulary items for a job."""
         try:
-            # Remove from cache
-            self._cache.pop(user_id, None)
-            
-            # Delete file
-            vocab_file = self.vocab_dir / f"{user_id}.json"
-            if vocab_file.exists():
-                vocab_file.unlink()
-                
+            # Remove from memory (would be DB in production)
+            if job_id in self._vocabulary_store:
+                del self._vocabulary_store[job_id]
+                log_info(f"Deleted vocabulary items for job {job_id}")
+                return True
+            return False
         except Exception as e:
-            logger.emit(
-                "Failed to delete vocabulary",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id
-                }
-            )
-            raise
-
-    async def get_words(self, user_id: str) -> List[str]:
-        """Get user's vocabulary words"""
-        try:
-            vocab = await self.get_vocabulary(user_id)
-            return [e.word for e in vocab.words]
-            
-        except Exception as e:
-            logger.emit(
-                "Failed to get vocabulary words",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id
-                }
-            )
-            raise
-
-    async def add_words(self, user_id: str, words: List[str]) -> VocabularyList:
-        """Add words to vocabulary"""
-        try:
-            update = VocabularyUpdate(add=words)
-            return await self.update_vocabulary(user_id, update)
-            
-        except Exception as e:
-            logger.emit(
-                "Failed to add vocabulary words",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id,
-                    "word_count": len(words)
-                }
-            )
-            raise
-
-    async def remove_words(self, user_id: str, words: List[str]) -> VocabularyList:
-        """Remove words from vocabulary"""
-        try:
-            update = VocabularyUpdate(remove=words)
-            return await self.update_vocabulary(user_id, update)
-            
-        except Exception as e:
-            logger.emit(
-                "Failed to remove vocabulary words",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": user_id,
-                    "word_count": len(words)
-                }
-            )
-            raise
-
-    async def _save_vocabulary(self, vocab: VocabularyList):
-        """Save vocabulary list to file"""
-        try:
-            # Update cache
-            self._cache[vocab.user_id] = vocab
-            
-            # Save to file
-            vocab_file = self.vocab_dir / f"{vocab.user_id}.json"
-            with open(vocab_file, "w", encoding="utf-8") as f:
-                json.dump(vocab.dict(), f, indent=2, default=str)
-                
-        except Exception as e:
-            logger.emit(
-                "Failed to save vocabulary",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "user_id": vocab.user_id,
-                    "word_count": len(vocab.words)
-                }
-            )
-            raise
-
-    def _clean_word(self, word: str) -> str:
-        """Clean and normalize word"""
-        return word.strip().lower()
-
-    def _validate_word(self, word: str) -> bool:
-        """Validate word"""
-        return len(word) >= self.min_word_length
-
-    async def cleanup_old_vocabularies(self, days: int):
-        """Delete vocabularies older than specified days"""
-        try:
-            cutoff = datetime.utcnow() - timedelta(days=days)
-            
-            for vocab_file in self.vocab_dir.glob("*.json"):
-                try:
-                    with open(vocab_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        updated_at = datetime.fromisoformat(data["updated_at"])
-                        
-                    if updated_at < cutoff:
-                        vocab_file.unlink()
-                        user_id = vocab_file.stem
-                        self._cache.pop(user_id, None)
-                        
-                except Exception as e:
-                    logger.emit(
-                        "Failed to process vocabulary file",
-                        severity=Severity.WARN,
-                        attributes={
-                            "error": str(e),
-                            "file": str(vocab_file)
-                        }
-                    )
-                    
-        except Exception as e:
-            logger.emit(
-                "Failed to cleanup old vocabularies",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(e),
-                    "days": days
-                }
-            )
+            log_error(f"Error deleting vocabulary for job {job_id}: {str(e)}")
             raise

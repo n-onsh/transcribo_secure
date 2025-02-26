@@ -1,3 +1,5 @@
+"""Transcriber service."""
+
 import asyncio
 import logging
 from datetime import datetime
@@ -5,19 +7,29 @@ import httpx
 import uuid
 import socket
 import json
-from opentelemetry import trace, logs
-from opentelemetry.logs import Severity
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-from opentelemetry.instrumentation.logging import LoggingInstrumentor
 from pathlib import Path
 import os
 import tempfile
 import shutil
-from .utils import setup_telemetry
 from fastapi import FastAPI, HTTPException, Response, BackgroundTasks
+from prometheus_client import make_asgi_app
 from .services.provider import TranscriberServiceProvider
+from .utils import setup_metrics
+from .utils.metrics import (
+    PROCESSING_DURATION,
+    PROCESSING_TOTAL,
+    PROCESSING_ERRORS,
+    MODEL_LOAD_TIME,
+    MODEL_INFERENCE_TIME,
+    QUEUE_SIZE,
+    QUEUE_WAIT_TIME,
+    track_processing,
+    track_model_load,
+    track_inference,
+    track_queue_metrics
+)
 
-# Configure logging first to minimize startup output
+# Configure logging
 logging.basicConfig(
     level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -26,16 +38,14 @@ logging.basicConfig(
 # Create FastAPI app
 app = FastAPI()
 
-# Set up OpenTelemetry
-setup_telemetry(app)
+# Create metrics app
+metrics_app = make_asgi_app()
 
-# Initialize instrumentors
-HTTPXClientInstrumentor().instrument()
-LoggingInstrumentor().instrument()
+# Mount metrics endpoint
+app.mount("/metrics", metrics_app)
 
-# Get tracer and logger
-tracer = trace.get_tracer(__name__)
-logger = logs.get_logger(__name__)
+# Set up metrics
+setup_metrics()
 
 # Global service provider
 service_provider = TranscriberServiceProvider()
@@ -49,26 +59,21 @@ is_ready = False
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint."""
     if not is_healthy:
         raise HTTPException(status_code=503, detail="Service unhealthy")
     return {"status": "healthy", "instance_id": instance_id}
 
 @app.get("/ready")
 async def ready_check():
-    """Readiness check endpoint"""
+    """Readiness check endpoint."""
     if not is_ready:
         raise HTTPException(status_code=503, detail="Service not ready")
     return {"status": "ready", "instance_id": instance_id}
 
-@app.get("/metrics")
-async def metrics():
-    """Metrics endpoint for Prometheus"""
-    return {}  # PrometheusMetricReader will handle the response
-
 @app.get("/instance")
 async def get_instance_info():
-    """Get instance information"""
+    """Get instance information."""
     return {
         "instance_id": instance_id,
         "hostname": socket.gethostname(),
@@ -80,7 +85,7 @@ async def get_instance_info():
 
 @app.post("/jobs/{job_id}/process")
 async def process_job(job_id: str, background_tasks: BackgroundTasks):
-    """Process a job in the background"""
+    """Process a job in the background."""
     if not is_ready:
         raise HTTPException(status_code=503, detail="Service not ready")
     
@@ -89,35 +94,23 @@ async def process_job(job_id: str, background_tasks: BackgroundTasks):
     return {"status": "processing", "job_id": job_id, "instance_id": instance_id}
 
 async def process_job_task(job_id: str):
-    """Process a transcription job"""
+    """Process a transcription job."""
     # Create a unique temporary directory for this job
     job_temp_dir = Path(tempfile.mkdtemp(prefix=f"transcriber-{job_id}-"))
+    start_time = datetime.utcnow()
     
     try:
         # Get job details
         job = await service_provider.backend.get_job(job_id)
         if not job:
-            logger.emit(
-                "Job not found",
-                severity=Severity.ERROR,
-                attributes={"job_id": job_id}
-            )
+            logging.error(f"Job not found: {job_id}")
             return
             
         file_id = job['file_id']
         language = job.get('language', 'de')  # Default to German if not specified
         vocabulary = job.get('vocabulary', [])
         
-        logger.emit(
-            "Processing job",
-            severity=Severity.INFO,
-            attributes={
-                "job_id": job_id,
-                "file_id": file_id,
-                "instance_id": instance_id,
-                "language": language
-            }
-        )
+        logging.info(f"Processing job {job_id} for file {file_id}")
 
         # Update job status to processing
         await service_provider.backend.update_job_status(
@@ -127,24 +120,18 @@ async def process_job_task(job_id: str):
         )
 
         # Download file
-        with tracer.start_span("download_file") as download_span:
-            download_span.set_attribute("file_id", file_id)
-            input_file = await service_provider.backend.download_file(file_id, job_temp_dir)
+        input_file = await service_provider.backend.download_file(file_id, job_temp_dir)
         
         # Perform transcription
-        with tracer.start_span("transcribe") as transcribe_span:
-            transcribe_span.set_attribute("job_id", job_id)
-            transcription_result = await service_provider.transcription.transcribe(
-                input_file,
-                job_id=job_id,
-                language=language,
-                vocabulary=vocabulary
-            )
+        transcription_result = await service_provider.transcription.transcribe(
+            input_file,
+            job_id=job_id,
+            language=language,
+            vocabulary=vocabulary
+        )
 
         # Upload results
-        with tracer.start_span("upload_results") as upload_span:
-            upload_span.set_attribute("job_id", job_id)
-            await service_provider.backend.upload_results(job_id, transcription_result)
+        await service_provider.backend.upload_results(job_id, transcription_result)
         
         # Update job status to completed
         await service_provider.backend.update_job_status(
@@ -153,26 +140,16 @@ async def process_job_task(job_id: str):
             {"instance_id": instance_id}
         )
         
-        logger.emit(
-            "Job completed successfully",
-            severity=Severity.INFO,
-            attributes={
-                "job_id": job_id,
-                "instance_id": instance_id,
-                "duration": transcription_result.get("duration", 0)
-            }
-        )
+        # Track successful processing
+        duration = (datetime.utcnow() - start_time).total_seconds()
+        track_processing(duration, True)
+        logging.info(f"Job {job_id} completed successfully in {duration:.2f}s")
         
     except Exception as e:
-        logger.emit(
-            "Error processing job",
-            severity=Severity.ERROR,
-            attributes={
-                "error": str(e),
-                "job_id": job_id,
-                "instance_id": instance_id
-            }
-        )
+        # Track failed processing
+        duration = (datetime.utcnow() - start_time).total_seconds()
+        track_processing(duration, False)
+        logging.error(f"Error processing job {job_id}: {str(e)}")
         
         # Update job status to failed
         try:
@@ -185,50 +162,27 @@ async def process_job_task(job_id: str):
                 }
             )
         except Exception as update_error:
-            logger.emit(
-                "Failed to update job status",
-                severity=Severity.ERROR,
-                attributes={
-                    "error": str(update_error),
-                    "job_id": job_id
-                }
-            )
+            logging.error(f"Failed to update job status for {job_id}: {str(update_error)}")
         
     finally:
         # Cleanup temporary directory
         try:
             shutil.rmtree(job_temp_dir, ignore_errors=True)
         except Exception as cleanup_error:
-            logger.emit(
-                "Failed to clean up temporary directory",
-                severity=Severity.WARN,
-                attributes={
-                    "error": str(cleanup_error),
-                    "job_id": job_id,
-                    "temp_dir": str(job_temp_dir)
-                }
-            )
+            logging.warning(f"Failed to clean up temporary directory for job {job_id}: {str(cleanup_error)}")
 
 class TranscriberService:
     def __init__(self):
-        """Initialize transcriber service"""
+        """Initialize transcriber service."""
         self.running = False
         self.job_workers = []
-        logger.emit(
-            "Transcriber service initialized",
-            severity=Severity.INFO,
-            attributes={"instance_id": instance_id}
-        )
+        logging.info("Transcriber service initialized")
 
     async def start(self):
-        """Start the transcriber service"""
+        """Start the transcriber service."""
         global is_ready
         
-        logger.emit(
-            "Starting transcriber service",
-            severity=Severity.INFO,
-            attributes={"instance_id": instance_id}
-        )
+        logging.info("Starting transcriber service")
         
         self.running = True
         
@@ -245,14 +199,10 @@ class TranscriberService:
         await asyncio.gather(*self.job_workers, return_exceptions=True)
 
     async def stop(self):
-        """Stop the transcriber service"""
+        """Stop the transcriber service."""
         global is_ready, is_healthy
         
-        logger.emit(
-            "Stopping transcriber service",
-            severity=Severity.INFO,
-            attributes={"instance_id": instance_id}
-        )
+        logging.info("Stopping transcriber service")
         
         # Mark service as not ready and unhealthy
         is_ready = False
@@ -268,22 +218,11 @@ class TranscriberService:
         # Wait for workers to complete
         await asyncio.gather(*self.job_workers, return_exceptions=True)
         
-        logger.emit(
-            "Transcriber service stopped",
-            severity=Severity.INFO,
-            attributes={"instance_id": instance_id}
-        )
+        logging.info("Transcriber service stopped")
 
     async def _job_worker(self, worker_id: str):
-        """Worker task to process jobs"""
-        logger.emit(
-            "Job worker started",
-            severity=Severity.INFO,
-            attributes={
-                "worker_id": worker_id,
-                "instance_id": instance_id
-            }
-        )
+        """Worker task to process jobs."""
+        logging.info(f"Job worker {worker_id} started")
         
         while self.running:
             try:
@@ -298,30 +237,15 @@ class TranscriberService:
                     await asyncio.sleep(service_provider.settings.poll_interval)
                     
             except asyncio.CancelledError:
-                logger.emit(
-                    "Job worker cancelled",
-                    severity=Severity.INFO,
-                    attributes={
-                        "worker_id": worker_id,
-                        "instance_id": instance_id
-                    }
-                )
+                logging.info(f"Job worker {worker_id} cancelled")
                 break
                 
             except Exception as e:
-                logger.emit(
-                    "Error in job worker",
-                    severity=Severity.ERROR,
-                    attributes={
-                        "error": str(e),
-                        "worker_id": worker_id,
-                        "instance_id": instance_id
-                    }
-                )
+                logging.error(f"Error in job worker {worker_id}: {str(e)}")
                 await asyncio.sleep(service_provider.settings.poll_interval)
 
 async def main():
-    """Main entry point"""
+    """Main entry point."""
     global is_healthy
     
     try:
@@ -343,11 +267,7 @@ async def main():
         )
         
     except Exception as e:
-        logger.emit(
-            "Fatal error",
-            severity=Severity.ERROR,
-            attributes={"error": str(e)}
-        )
+        logging.error(f"Fatal error: {str(e)}")
         is_healthy = False
         raise
         

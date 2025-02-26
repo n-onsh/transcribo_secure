@@ -45,3 +45,23 @@ class FileKeyUpdate(BaseModel):
 class FileKeyShareUpdate(BaseModel):
     """File key share update model"""
     encrypted_key: Optional[bytes] = None
+
+class FileKeyResponse(BaseModel):
+    """File key response model"""
+    file_id: UUID
+    owner_id: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True
+
+class FileKeyShareResponse(BaseModel):
+    """File key share response model"""
+    file_id: UUID
+    user_id: UUID
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        orm_mode = True

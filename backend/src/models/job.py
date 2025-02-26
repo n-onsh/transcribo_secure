@@ -467,6 +467,51 @@ class JobFilter(BaseModel):
             
         return filtered
 
+class JobResponse(BaseModel):
+    """Job response model"""
+    id: str = Field(..., description="Job ID")
+    file_name: str = Field(..., description="File name")
+    status: JobStatus = Field(..., description="Current status")
+    progress: float = Field(
+        default=0.0,
+        description="Processing progress (0-100)",
+        ge=0.0,
+        le=100.0
+    )
+    error: Optional[str] = Field(None, description="Error message if failed")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    completed_at: Optional[datetime] = Field(None, description="Completion timestamp")
+    options: Optional[TranscriptionOptions] = Field(
+        None,
+        description="Transcription configuration options"
+    )
+    language: Optional[str] = Field(
+        default="de",
+        description="Target language for transcription (ISO 639-1 code)",
+        example="de"
+    )
+    supported_languages: List[str] = Field(
+        default=["de", "en", "fr", "it"],
+        description="List of supported languages",
+        example=["de", "en", "fr", "it"]
+    )
+
+class TranscriptionResponse(BaseModel):
+    """Transcription response model"""
+    job_id: str = Field(..., description="Job ID")
+    text: str = Field(..., description="Full transcription text")
+    segments: List[Segment] = Field(..., description="List of transcribed segments")
+    speakers: List[Speaker] = Field(..., description="List of speakers")
+    language: Optional[str] = Field(None, description="Detected language")
+    duration: Optional[float] = Field(None, description="Audio duration in seconds")
+    word_count: Optional[int] = Field(None, description="Total word count")
+    confidence: Optional[float] = Field(
+        None,
+        description="Overall confidence score",
+        ge=0.0,
+        le=1.0
+    )
+
 class JobSort(BaseModel):
     """Job sort model"""
     field: str = Field(default="priority")

@@ -4,352 +4,356 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Jobs - Transcribo</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        .job-card {
-            transition: transform 0.2s;
+        .hash-info {
+            font-family: monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
         }
-        .job-card:hover {
-            transform: translateY(-2px);
+        .hash-verified {
+            color: #198754;
         }
-        .status-badge {
-            font-size: 0.875rem;
-            padding: 0.25rem 0.5rem;
+        .hash-unverified {
+            color: #dc3545;
         }
-        .status-pending {
-            background-color: #ffc107;
-            color: #000;
-        }
-        .status-processing {
-            background-color: #0dcaf0;
-            color: #000;
-        }
-        .status-completed {
-            background-color: #198754;
-            color: #fff;
-        }
-        .status-failed {
-            background-color: #dc3545;
-            color: #fff;
-        }
-        .progress {
-            height: 0.5rem;
-            margin-top: 0.5rem;
-        }
-        .eta-text {
-            font-size: 0.875rem;
+        .hash-pending {
             color: #6c757d;
         }
-        .filter-section {
-            background-color: #f8f9fa;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            margin-bottom: 1.5rem;
-        }
-        .job-actions {
-            opacity: 0;
+        .tag-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.25rem 0.75rem;
+            border-radius: 1rem;
+            font-size: 0.875rem;
+            margin-right: 0.5rem;
+            margin-bottom: 0.5rem;
+            color: white;
+            cursor: pointer;
             transition: opacity 0.2s;
         }
-        .job-card:hover .job-actions {
-            opacity: 1;
+        .tag-badge:hover {
+            opacity: 0.8;
+        }
+        .tag-badge i {
+            margin-left: 0.5rem;
+            font-size: 0.75rem;
+        }
+        .tag-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
         }
     </style>
 </head>
 <body>
     <!-- Navigation -->
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container">
+        <div class="container-fluid">
             <a class="navbar-brand" href="/">Transcribo</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/upload">Upload</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/jobs">Jobs</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/settings">Settings</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/help">Help</a>
-                    </li>
-                </ul>
+            <div class="ms-auto">
+                <a href="/upload" class="btn btn-light me-2">
+                    <i class="bi bi-cloud-upload"></i> Upload New
+                </a>
+                <a href="/tags" class="btn btn-light">
+                    <i class="bi bi-tags"></i> Manage Tags
+                </a>
             </div>
         </div>
     </nav>
 
-    <!-- Content -->
     <div class="container mt-4">
-        <!-- Filters -->
-        <div class="filter-section">
-            <div class="row g-3">
-                <div class="col-md-3">
-                    <label class="form-label">Status</label>
-                    <select class="form-select" id="status-filter">
-                        <option value="">All</option>
-                        <option value="pending">Pending</option>
-                        <option value="processing">Processing</option>
-                        <option value="completed">Completed</option>
-                        <option value="failed">Failed</option>
-                    </select>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">Language</label>
-                    <select class="form-select" id="language-filter">
-                        <option value="">All</option>
-                        <option value="de">German</option>
-                        <option value="en">English</option>
-                        <option value="fr">French</option>
-                        <option value="it">Italian</option>
-                    </select>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">Sort By</label>
-                    <select class="form-select" id="sort-by">
-                        <option value="created_desc">Newest First</option>
-                        <option value="created_asc">Oldest First</option>
-                        <option value="name_asc">Name (A-Z)</option>
-                        <option value="name_desc">Name (Z-A)</option>
-                    </select>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">Search</label>
-                    <input type="text" class="form-control" id="search" placeholder="Search files...">
-                </div>
-            </div>
+        <h2>Your Jobs</h2>
+        <div class="row mt-4" id="jobs-container">
+            <!-- Jobs will be added here -->
         </div>
+    </div>
 
-        <!-- Jobs List -->
-        <div class="row g-4" id="jobs-list">
-            <!-- Job Card Template -->
-            <template id="job-card-template">
-                <div class="col-md-6">
-                    <div class="card job-card">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start mb-2">
-                                <h5 class="card-title text-truncate mb-0" style="max-width: 70%;">
-                                    <i class="bi bi-file-earmark-music me-2"></i>
-                                    <span class="job-name"></span>
-                                </h5>
-                                <span class="badge status-badge"></span>
-                            </div>
-                            <div class="card-text">
-                                <div class="d-flex justify-content-between mb-2">
-                                    <small class="text-muted job-created"></small>
-                                    <small class="text-muted job-language"></small>
-                                </div>
-                                <div class="progress">
-                                    <div class="progress-bar progress-bar-striped progress-bar-animated"
-                                         role="progressbar"
-                                         style="width: 0%"></div>
-                                </div>
-                                <small class="eta-text d-block mt-2"></small>
-                            </div>
-                            <div class="job-actions mt-3">
-                                <button class="btn btn-sm btn-outline-primary view-btn">
-                                    <i class="bi bi-eye"></i> View
-                                </button>
-                                <button class="btn btn-sm btn-outline-danger cancel-btn">
-                                    <i class="bi bi-x-circle"></i> Cancel
-                                </button>
-                                <button class="btn btn-sm btn-outline-secondary download-btn">
-                                    <i class="bi bi-download"></i> Download
-                                </button>
-                            </div>
+    <!-- Job Card Template -->
+    <template id="job-card-template">
+        <div class="col-md-6 col-lg-4 mb-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title"></h5>
+                    <div class="card-text mb-3">
+                        Status: <span class="badge"></span>
+                    </div>
+                    <div class="card-text mb-3">
+                        <div class="d-flex align-items-center">
+                            <span class="me-2">Tags:</span>
+                            <div class="tag-container"></div>
+                            <button class="btn btn-sm btn-outline-primary ms-2" onclick="showAddTagModal(this)">
+                                <i class="bi bi-plus-lg"></i>
+                            </button>
                         </div>
                     </div>
+                    <div class="progress mb-3" style="height: 5px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             role="progressbar" style="width: 0%"></div>
+                    </div>
+                    <div class="hash-info mb-3">
+                        <small class="d-block text-muted">Hash (SHA-256):</small>
+                        <span class="hash-value"></span>
+                        <span class="hash-status ms-2"></span>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <button class="btn btn-sm btn-outline-primary verify-btn">
+                            <i class="bi bi-shield-check"></i> Verify Hash
+                        </button>
+                        <a href="#" class="btn btn-sm btn-primary edit-btn">
+                            <i class="bi bi-pencil"></i> Edit
+                        </a>
+                    </div>
                 </div>
-            </template>
-        </div>
-
-        <!-- Loading Spinner -->
-        <div class="text-center mt-4" id="loading-spinner">
-            <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Loading...</span>
+                <div class="card-footer text-muted">
+                    <small>Created: <span class="created-at"></span></small>
+                </div>
             </div>
         </div>
+    </template>
 
-        <!-- No Jobs Message -->
-        <div class="text-center mt-4 d-none" id="no-jobs-message">
-            <p class="text-muted">No jobs found. <a href="/upload">Upload some files</a> to get started.</p>
+    <!-- Add Tag Modal -->
+    <div class="modal fade" id="addTagModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add Tags</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="available-tags" class="mb-3">
+                        <!-- Available tags will be added here -->
+                    </div>
+                    <a href="/tags" class="btn btn-outline-primary btn-sm">
+                        <i class="bi bi-plus-lg"></i> Create New Tag
+                    </a>
+                </div>
+            </div>
         </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Initialize tooltips
-        const tooltips = document.querySelectorAll('[data-bs-toggle="tooltip"]');
-        tooltips.forEach(tooltip => new bootstrap.Tooltip(tooltip));
+        // Initialize modals
+        const addTagModal = new bootstrap.Modal(document.getElementById('addTagModal'));
+        let currentJobId = null;
 
-        // Job status classes
-        const statusClasses = {
-            pending: 'status-pending',
-            processing: 'status-processing',
-            completed: 'status-completed',
-            failed: 'status-failed'
-        };
+        // Load jobs when page loads
+        document.addEventListener('DOMContentLoaded', loadJobs);
 
-        // Format relative time
-        function formatRelativeTime(date) {
-            const now = new Date();
-            const diff = now - new Date(date);
-            const minutes = Math.floor(diff / 60000);
-            const hours = Math.floor(minutes / 60);
-            const days = Math.floor(hours / 24);
+        async function loadJobs() {
+            try {
+                const response = await fetch('/api/files');
+                if (!response.ok) {
+                    throw new Error('Failed to load jobs');
+                }
 
-            if (days > 0) return `${days}d ago`;
-            if (hours > 0) return `${hours}h ago`;
-            if (minutes > 0) return `${minutes}m ago`;
-            return 'Just now';
-        }
+                const jobs = await response.json();
+                const container = document.getElementById('jobs-container');
+                container.innerHTML = '';
 
-        // Format file size
-        function formatSize(bytes) {
-            const units = ['B', 'KB', 'MB', 'GB'];
-            let size = bytes;
-            let unit = 0;
-            while (size >= 1024 && unit < units.length - 1) {
-                size /= 1024;
-                unit++;
+                for (const job of jobs) {
+                    const card = await createJobCard(job);
+                    container.appendChild(card);
+                }
+            } catch (error) {
+                console.error('Error loading jobs:', error);
+                alert('Failed to load jobs');
             }
-            return `${size.toFixed(1)} ${units[unit]}`;
         }
 
-        // Create job card
-        function createJobCard(job) {
+        async function createJobCard(job) {
             const template = document.getElementById('job-card-template');
             const card = template.content.cloneNode(true);
 
-            // Set job details
-            card.querySelector('.job-name').textContent = job.file_name;
-            card.querySelector('.status-badge').textContent = job.status;
-            card.querySelector('.status-badge').classList.add(statusClasses[job.status]);
-            card.querySelector('.job-created').textContent = formatRelativeTime(job.created_at);
-            card.querySelector('.job-language').textContent = job.language.toUpperCase();
+            // Store job ID
+            const cardDiv = card.querySelector('.card');
+            cardDiv.dataset.jobId = job.id;
 
-            // Set progress
+            // Set job title
+            card.querySelector('.card-title').textContent = job.name;
+
+            // Set status badge
+            const badge = card.querySelector('.badge');
+            const statusClass = {
+                'pending': 'bg-warning',
+                'processing': 'bg-info',
+                'completed': 'bg-success',
+                'failed': 'bg-danger'
+            }[job.status] || 'bg-secondary';
+            badge.className = `badge ${statusClass}`;
+            badge.textContent = job.status;
+
+            // Set progress bar
             const progressBar = card.querySelector('.progress-bar');
             progressBar.style.width = `${job.progress || 0}%`;
             progressBar.setAttribute('aria-valuenow', job.progress || 0);
 
-            // Set ETA
-            if (job.eta) {
-                card.querySelector('.eta-text').textContent = 
-                    `Estimated completion: ${new Date(job.eta).toLocaleTimeString()}`;
+            // Set hash info
+            const hashValue = card.querySelector('.hash-value');
+            const hashStatus = card.querySelector('.hash-status');
+            if (job.hash) {
+                hashValue.textContent = job.hash;
+                if (job.verified) {
+                    hashStatus.innerHTML = '<i class="bi bi-check-circle-fill hash-verified"></i>';
+                    hashStatus.title = 'Hash verified';
+                } else {
+                    hashStatus.innerHTML = '<i class="bi bi-question-circle-fill hash-pending"></i>';
+                    hashStatus.title = 'Hash not verified';
+                }
+            } else {
+                hashValue.textContent = 'Not available';
+                hashStatus.innerHTML = '<i class="bi bi-dash-circle-fill hash-unverified"></i>';
+                hashStatus.title = 'No hash available';
             }
 
-            // Setup buttons
-            const viewBtn = card.querySelector('.view-btn');
-            viewBtn.onclick = () => window.location.href = `/jobs/${job.id}`;
+            // Set created date
+            card.querySelector('.created-at').textContent = 
+                new Date(job.created_at).toLocaleString();
 
-            const cancelBtn = card.querySelector('.cancel-btn');
-            cancelBtn.onclick = () => cancelJob(job.id);
-            cancelBtn.style.display = ['pending', 'processing'].includes(job.status) ? 'inline-block' : 'none';
+            // Set edit button link
+            card.querySelector('.edit-btn').href = `/editor/${job.id}`;
 
-            const downloadBtn = card.querySelector('.download-btn');
-            downloadBtn.onclick = () => downloadTranscription(job.id);
-            downloadBtn.style.display = job.status === 'completed' ? 'inline-block' : 'none';
+            // Set up verify button
+            const verifyBtn = card.querySelector('.verify-btn');
+            if (!job.hash) {
+                verifyBtn.disabled = true;
+                verifyBtn.title = 'No hash available to verify';
+            } else {
+                verifyBtn.addEventListener('click', () => verifyHash(job));
+            }
+
+            // Load and set tags
+            await loadJobTags(job.id, card.querySelector('.tag-container'));
 
             return card;
         }
 
-        // Load jobs
-        async function loadJobs() {
-            const status = document.getElementById('status-filter').value;
-            const language = document.getElementById('language-filter').value;
-            const sort = document.getElementById('sort-by').value;
-            const search = document.getElementById('search').value;
-
+        async function loadJobTags(jobId, container) {
             try {
-                const response = await fetch(
-                    `/api/jobs?${new URLSearchParams({
-                        status,
-                        language,
-                        sort,
-                        search
-                    })}`
-                );
-                const data = await response.json();
-
-                const jobsList = document.getElementById('jobs-list');
-                jobsList.innerHTML = '';
-
-                if (data.jobs.length === 0) {
-                    document.getElementById('no-jobs-message').classList.remove('d-none');
-                } else {
-                    document.getElementById('no-jobs-message').classList.add('d-none');
-                    data.jobs.forEach(job => {
-                        jobsList.appendChild(createJobCard(job));
-                    });
+                const response = await fetch(`/api/tags/resources/job/${jobId}/tags`);
+                if (!response.ok) {
+                    throw new Error('Failed to load tags');
                 }
+
+                const tags = await response.json();
+                container.innerHTML = '';
+
+                tags.forEach(tag => {
+                    const tagElement = createTagBadge(tag, jobId);
+                    container.appendChild(tagElement);
+                });
             } catch (error) {
-                console.error('Failed to load jobs:', error);
-            } finally {
-                document.getElementById('loading-spinner').style.display = 'none';
+                console.error('Error loading tags:', error);
             }
         }
 
-        // Cancel job
-        async function cancelJob(jobId) {
+        function createTagBadge(tag, jobId) {
+            const badge = document.createElement('span');
+            badge.className = 'tag-badge';
+            badge.style.backgroundColor = tag.color;
+            badge.innerHTML = `
+                ${tag.name}
+                <i class="bi bi-x-circle" onclick="removeTag('${tag.id}', '${jobId}', this)"></i>
+            `;
+            return badge;
+        }
+
+        async function showAddTagModal(button) {
+            const jobId = button.closest('.card').dataset.jobId;
+            currentJobId = jobId;
+
             try {
-                const response = await fetch(`/api/jobs/${jobId}`, {
+                // Load available tags
+                const response = await fetch('/api/tags');
+                if (!response.ok) {
+                    throw new Error('Failed to load tags');
+                }
+
+                const tags = await response.json();
+                const container = document.getElementById('available-tags');
+                container.innerHTML = '';
+
+                tags.forEach(tag => {
+                    const badge = document.createElement('span');
+                    badge.className = 'tag-badge';
+                    badge.style.backgroundColor = tag.color;
+                    badge.textContent = tag.name;
+                    badge.onclick = () => assignTag(tag.id, jobId);
+                    container.appendChild(badge);
+                });
+
+                addTagModal.show();
+            } catch (error) {
+                console.error('Error loading tags:', error);
+                alert('Failed to load tags');
+            }
+        }
+
+        async function assignTag(tagId, jobId) {
+            try {
+                const response = await fetch(`/api/tags/resources/job/${jobId}/tags/${tagId}`, {
+                    method: 'POST'
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to assign tag');
+                }
+
+                // Reload job tags
+                const tagContainer = document.querySelector(`.card[data-job-id="${jobId}"] .tag-container`);
+                await loadJobTags(jobId, tagContainer);
+
+                addTagModal.hide();
+            } catch (error) {
+                console.error('Error assigning tag:', error);
+                alert('Failed to assign tag');
+            }
+        }
+
+        async function removeTag(tagId, jobId, element) {
+            try {
+                const response = await fetch(`/api/tags/resources/job/${jobId}/tags/${tagId}`, {
                     method: 'DELETE'
                 });
-                if (response.ok) {
+
+                if (!response.ok) {
+                    throw new Error('Failed to remove tag');
+                }
+
+                // Remove tag badge
+                element.closest('.tag-badge').remove();
+            } catch (error) {
+                console.error('Error removing tag:', error);
+                alert('Failed to remove tag');
+            }
+        }
+
+        async function verifyHash(job) {
+            try {
+                const response = await fetch(
+                    `/api/verify/files/${job.id}?expected_hash=${job.hash}`
+                );
+
+                if (!response.ok) {
+                    throw new Error('Hash verification failed');
+                }
+
+                const result = await response.json();
+                
+                if (result.is_valid) {
+                    alert('File hash verified successfully!');
+                    // Reload jobs to update UI
                     loadJobs();
+                } else {
+                    alert('Hash verification failed! The file may have been corrupted or tampered with.');
                 }
             } catch (error) {
-                console.error('Failed to cancel job:', error);
+                console.error('Error verifying hash:', error);
+                alert('Failed to verify hash: ' + error.message);
             }
         }
-
-        // Download transcription
-        async function downloadTranscription(jobId) {
-            try {
-                const response = await fetch(`/api/jobs/${jobId}/download`);
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `transcription_${jobId}.txt`;
-                document.body.appendChild(a);
-                a.click();
-                window.URL.revokeObjectURL(url);
-                a.remove();
-            } catch (error) {
-                console.error('Failed to download transcription:', error);
-            }
-        }
-
-        // Setup filters
-        document.getElementById('status-filter').onchange = loadJobs;
-        document.getElementById('language-filter').onchange = loadJobs;
-        document.getElementById('sort-by').onchange = loadJobs;
-        document.getElementById('search').oninput = debounce(loadJobs, 300);
-
-        // Debounce function
-        function debounce(func, wait) {
-            let timeout;
-            return function executedFunction(...args) {
-                const later = () => {
-                    clearTimeout(timeout);
-                    func(...args);
-                };
-                clearTimeout(timeout);
-                timeout = setTimeout(later, wait);
-            };
-        }
-
-        // Auto-refresh jobs
-        setInterval(loadJobs, 5000);
-
-        // Initial load
-        loadJobs();
     </script>
 </body>
 </html>

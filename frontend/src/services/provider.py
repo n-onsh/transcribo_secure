@@ -1,169 +1,76 @@
+"""Service provider for frontend."""
+
 import logging
-from typing import Dict, List, Optional, Protocol
-from pydantic_settings import BaseSettings
+from typing import Dict, Optional
 from .auth import AuthService
-from .api import APIService
-
-logger = logging.getLogger(__name__)
-
-class Settings(BaseSettings):
-    """Frontend settings"""
-    backend_api_url: str
-    auth_client_id: str
-    auth_tenant_id: str
-    auth_redirect_uri: str
-    storage_secret: str
-    frontend_port: int = 8501
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
-
-class AuthServiceInterface(Protocol):
-    """Interface for authentication service"""
-    async def get_token(self) -> Optional[str]:
-        """Get current auth token"""
-        ...
-
-    async def login(self) -> str:
-        """Get login URL"""
-        ...
-
-    async def handle_callback(self, code: str) -> None:
-        """Handle auth callback"""
-        ...
-
-    def logout(self) -> str:
-        """Get logout URL"""
-        ...
-
-    async def cleanup(self) -> None:
-        """Clean up resources"""
-        ...
-
-class APIServiceInterface(Protocol):
-    """Interface for API service"""
-    async def upload_file(self, content: bytes, name: str) -> Dict:
-        """Upload file to backend"""
-        ...
-
-    async def get_jobs(self) -> List[Dict]:
-        """Get list of jobs"""
-        ...
-
-    async def get_transcription(self, job_id: str) -> Dict:
-        """Get transcription results"""
-        ...
-
-    async def get_vocabulary(self) -> List[str]:
-        """Get vocabulary list"""
-        ...
-
-    async def save_vocabulary(self, words: List[str]) -> None:
-        """Save vocabulary list"""
-        ...
-
-    async def cleanup(self) -> None:
-        """Clean up resources"""
-        ...
+from .api import ApiService
 
 class FrontendServiceProvider:
-    """Service provider for frontend container"""
+    """Provider for frontend services."""
+
     def __init__(self):
-        """Initialize service provider"""
-        self._settings = None
-        self._auth = None
-        self._api = None
-        self._initialized = False
-        logger.info("Frontend service provider initialized")
+        """Initialize service provider."""
+        self.settings = None
+        self.auth = None
+        self.api = None
+        self.initialized = False
 
     async def initialize(self):
-        """Initialize all services"""
-        if self._initialized:
+        """Initialize services."""
+        if self.initialized:
             return
 
         try:
-            # Load settings
-            self._settings = Settings()
-            logger.info("Settings loaded")
+            # Initialize settings
+            self.settings = self._load_settings()
+            logging.info("Settings loaded")
 
-            try:
-                # Initialize auth service
-                self._auth = AuthService(
-                    client_id=self._settings.auth_client_id,
-                    tenant_id=self._settings.auth_tenant_id,
-                    redirect_uri=self._settings.auth_redirect_uri
-                )
-                logger.info("Auth service initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize auth service: {str(e)}")
-                raise
+            # Initialize auth service
+            self.auth = AuthService(self.settings)
+            await self.auth.initialize()
+            logging.info("Auth service initialized")
 
-            try:
-                # Initialize API service
-                self._api = APIService(
-                    base_url=self._settings.backend_api_url,
-                    auth_service=self._auth
-                )
-                logger.info("API service initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize API service: {str(e)}")
-                await self._auth.cleanup()  # Clean up auth if API init fails
-                raise
+            # Initialize API client
+            self.api = ApiService(self.settings)
+            await self.api.initialize()
+            logging.info("API service initialized")
 
-            self._initialized = True
-            logger.info("All services initialized")
+            self.initialized = True
+            logging.info("Service provider initialization complete")
 
         except Exception as e:
-            logger.error(f"Failed to initialize services: {str(e)}")
-            await self.cleanup()
+            logging.error(f"Failed to initialize service provider: {str(e)}")
             raise
 
     async def cleanup(self):
-        """Clean up all services"""
+        """Clean up services."""
         try:
-            # Clean up services in reverse initialization order
-            if self._api:
-                try:
-                    await self._api.cleanup()
-                except Exception as e:
-                    logger.error(f"Error cleaning up API service: {str(e)}")
+            if self.api:
+                await self.api.cleanup()
+                logging.info("API service cleaned up")
 
-            if self._auth:
-                try:
-                    await self._auth.cleanup()
-                except Exception as e:
-                    logger.error(f"Error cleaning up auth service: {str(e)}")
+            if self.auth:
+                await self.auth.cleanup()
+                logging.info("Auth service cleaned up")
 
-            # Clear references
-            self._api = None
-            self._auth = None
-            self._settings = None
-            self._initialized = False
-            logger.info("Services cleaned up")
+            self.initialized = False
+            logging.info("Service provider cleanup complete")
 
         except Exception as e:
-            logger.error(f"Error in cleanup process: {str(e)}")
+            logging.error(f"Error during service provider cleanup: {str(e)}")
             raise
 
-    @property
-    def settings(self) -> Settings:
-        """Get settings"""
-        if not self._initialized:
-            raise RuntimeError("Services not initialized")
-        return self._settings
+    def _load_settings(self) -> Dict:
+        """Load settings from environment."""
+        import os
 
-    @property
-    def auth(self) -> AuthServiceInterface:
-        """Get auth service"""
-        if not self._initialized:
-            raise RuntimeError("Services not initialized")
-        return self._auth
-
-    @property
-    def api(self) -> APIServiceInterface:
-        """Get API service"""
-        if not self._initialized:
-            raise RuntimeError("Services not initialized")
-        return self._api
+        return {
+            'backend_url': os.getenv('BACKEND_URL', 'http://backend:8000'),
+            'auth_url': os.getenv('AUTH_URL', 'http://auth:8080'),
+            'session_secret': os.getenv('SESSION_SECRET', 'default-secret'),
+            'temp_dir': os.getenv('TEMP_DIR', '/tmp'),
+            'upload_limit': int(os.getenv('UPLOAD_LIMIT', '104857600')),  # 100MB
+            'allowed_extensions': os.getenv('ALLOWED_EXTENSIONS', '.mp3,.wav,.m4a').split(','),
+            'request_timeout': int(os.getenv('REQUEST_TIMEOUT', '30')),  # 30 seconds
+            'retry_limit': int(os.getenv('RETRY_LIMIT', '3'))
+        }

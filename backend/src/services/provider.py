@@ -1,190 +1,249 @@
-from typing import Dict, Optional, Type, TypeVar
-from opentelemetry import trace
+"""Service provider for backend."""
+
+import logging
+from typing import Optional, Dict, List, Type, TypeVar, Any
 from ..utils.logging import log_info, log_error
+from .database import DatabaseService
+from .storage import StorageService
+from .encryption import EncryptionService
+from .job_manager import JobManager
+from .key_management import KeyManagementService
+from .file_key_service import FileKeyService
+from .database_file_keys import DatabaseFileKeyService
+from .zip_handler import ZipHandlerService
+from .viewer import ViewerService
+from .vocabulary import VocabularyService
+from .fault_tolerance import FaultToleranceService
+from .job_distribution import JobDistributionService
+from .cleanup import CleanupService
+from .transcription import TranscriptionService
 from .interfaces import (
     StorageInterface,
     JobManagerInterface,
-    DatabaseInterface,
-    KeyManagementInterface,
-    EncryptionInterface,
-    ZipHandlerInterface
+    VocabularyInterface,
+    ZipHandlerInterface,
+    ViewerInterface,
+    TagServiceInterface
 )
-from .storage import StorageService
-from .database import DatabaseService
-from .job_manager import JobManager
-from .key_management import KeyManagementService
-from .encryption import EncryptionService
-from .zip_handler import ZipHandler
-from ..utils.metrics import track_time, DB_OPERATION_DURATION
-
+from .tag_service import TagService
 
 T = TypeVar('T')
 
 class ServiceProvider:
-    """Service provider for dependency injection"""
-    
-    def __init__(self):
-        """Initialize service provider"""
-        self._services: Dict[Type, object] = {}
-        self._initialized = False
-        log_info("Service provider initialized")
+    """Provider for backend services."""
 
-    @track_time(DB_OPERATION_DURATION, {"operation": "initialize_services"})
+    def __init__(self):
+        """Initialize service provider."""
+        self.settings = None
+        self.database = None
+        self.storage: Optional[StorageService] = None
+        self.encryption = None
+        self.job_manager: Optional[JobManager] = None
+        self.key_management = None
+        self.file_key_service = None
+        self.database_file_keys = None
+        self.zip_handler: Optional[ZipHandlerService] = None
+        self.viewer: Optional[ViewerService] = None
+        self.vocabulary: Optional[VocabularyService] = None
+        self.fault_tolerance = None
+        self.job_distribution = None
+        self.cleanup = None
+        self.transcription: Optional[TranscriptionService] = None
+        self.tag_service: Optional[TagService] = None
+        self.initialized = False
+
+        # Interface mappings
+        self._interface_mappings = {
+            StorageInterface: lambda: self.storage,
+            JobManagerInterface: lambda: self.job_manager,
+            VocabularyInterface: lambda: self.vocabulary,
+            ZipHandlerInterface: lambda: self.zip_handler,
+            ViewerInterface: lambda: self.viewer,
+            TagServiceInterface: lambda: self.tag_service
+        }
+
+    def get(self, interface: Type[T]) -> Optional[T]:
+        """Get a service by its interface."""
+        if not self.initialized:
+            raise RuntimeError("Service provider not initialized")
+        
+        getter = self._interface_mappings.get(interface)
+        if not getter:
+            raise ValueError(f"No service registered for interface {interface.__name__}")
+        
+        return getter()
+
     async def initialize(self):
-        """Initialize all services in correct order"""
-        if self._initialized:
+        """Initialize services."""
+        if self.initialized:
             return
 
         try:
-            # Initialize database first
-            db = await self._init_database()
-            self._services[DatabaseInterface] = db
+            # Initialize settings
+            self.settings = self._load_settings()
+            log_info("Settings loaded")
 
-            # Initialize key management and encryption
-            key_mgmt = await self._init_key_management()
-            self._services[KeyManagementInterface] = key_mgmt
+            # Initialize core services
+            self.database = DatabaseService(self.settings)
+            await self.database.initialize()
+            log_info("Database service initialized")
 
-            encryption = await self._init_encryption(key_mgmt)
-            self._services[EncryptionInterface] = encryption
+            self.storage = StorageService(self.settings)
+            await self.storage.initialize()
+            log_info("Storage service initialized")
 
-            # Initialize storage
-            storage = await self._init_storage(db, encryption)
-            self._services[StorageInterface] = storage
+            self.encryption = EncryptionService(self.settings)
+            await self.encryption.initialize()
+            log_info("Encryption service initialized")
 
-            # Initialize job manager
-            job_manager = await self._init_job_manager(db, storage)
-            self._services[JobManagerInterface] = job_manager
+            # Initialize key services
+            self.key_management = KeyManagementService(self.settings)
+            await self.key_management.initialize()
+            log_info("Key management service initialized")
 
-            # Initialize ZIP handler
-            zip_handler = await self._init_zip_handler(storage, job_manager)
-            self._services[ZipHandlerInterface] = zip_handler
+            self.file_key_service = FileKeyService(self.settings)
+            await self.file_key_service.initialize()
+            log_info("File key service initialized")
 
-            self._initialized = True
-            log_info("All services initialized", {
-                "services": list(self._services.keys())
-            })
+            self.database_file_keys = DatabaseFileKeyService(self.settings)
+            await self.database_file_keys.initialize()
+            log_info("Database file keys service initialized")
+
+            # Initialize job services
+            self.job_manager = JobManager(self.settings)
+            await self.job_manager.initialize()
+            log_info("Job manager initialized")
+
+            self.job_distribution = JobDistributionService(self.settings)
+            await self.job_distribution.initialize()
+            log_info("Job distribution service initialized")
+
+            # Initialize transcription service
+            self.transcription = TranscriptionService(self.settings)
+            await self.transcription.initialize()
+            log_info("Transcription service initialized")
+
+            # Initialize file handling services
+            self.zip_handler = ZipHandlerService()
+            await self.zip_handler.initialize()
+            log_info("ZIP handler initialized")
+
+            self.viewer = ViewerService(self.settings)
+            await self.viewer.initialize()
+            log_info("Viewer service initialized")
+
+            # Initialize auxiliary services
+            self.vocabulary = VocabularyService(self.job_manager, self.transcription)
+            await self.vocabulary.initialize()
+            log_info("Vocabulary service initialized")
+
+            self.fault_tolerance = FaultToleranceService(self.settings)
+            await self.fault_tolerance.initialize()
+            log_info("Fault tolerance service initialized")
+
+            # Initialize tag service
+            self.tag_service = TagService(self.database)
+            await self.tag_service.initialize()
+            log_info("Tag service initialized")
+
+            self.cleanup = CleanupService(self.settings)
+            await self.cleanup.initialize()
+            log_info("Cleanup service initialized")
+
+            self.initialized = True
+            log_info("Service provider initialization complete")
 
         except Exception as e:
-            log_error("Failed to initialize services", {"error": str(e)})
-            await self.cleanup()
+            log_error(f"Failed to initialize service provider: {str(e)}")
             raise
 
     async def cleanup(self):
-        """Clean up all services"""
+        """Clean up services."""
         try:
-            # Clean up services in reverse initialization order
-            for service_type in [
-                ZipHandlerInterface,
-                JobManagerInterface,
-                StorageInterface,
-                EncryptionInterface,
-                KeyManagementInterface,
-                DatabaseInterface
-            ]:
-                service = self._services.get(service_type)
-                if service:
-                    try:
-                        if hasattr(service, 'close'):
-                            await service.close()
-                        elif hasattr(service, 'cleanup'):
-                            await service.cleanup()
-                    except Exception as e:
-                        log_error(f"Error cleaning up {service_type.__name__}", {"error": str(e)})
+            if self.tag_service:
+                await self.tag_service.cleanup()
+                log_info("Tag service cleaned up")
 
-            self._services.clear()
-            self._initialized = False
-            log_info("Services cleaned up")
+            if self.cleanup:
+                await self.cleanup.cleanup()
+                log_info("Cleanup service cleaned up")
+
+            if self.fault_tolerance:
+                await self.fault_tolerance.cleanup()
+                log_info("Fault tolerance service cleaned up")
+
+            if self.vocabulary:
+                await self.vocabulary.cleanup()
+                log_info("Vocabulary service cleaned up")
+
+            if self.viewer:
+                await self.viewer.cleanup()
+                log_info("Viewer service cleaned up")
+
+            if self.zip_handler:
+                await self.zip_handler.cleanup()
+                log_info("ZIP handler cleaned up")
+
+            if self.job_distribution:
+                await self.job_distribution.cleanup()
+                log_info("Job distribution service cleaned up")
+
+            if self.transcription:
+                await self.transcription.cleanup()
+                log_info("Transcription service cleaned up")
+
+            if self.job_manager:
+                await self.job_manager.cleanup()
+                log_info("Job manager cleaned up")
+
+            if self.database_file_keys:
+                await self.database_file_keys.cleanup()
+                log_info("Database file keys service cleaned up")
+
+            if self.file_key_service:
+                await self.file_key_service.cleanup()
+                log_info("File key service cleaned up")
+
+            if self.key_management:
+                await self.key_management.cleanup()
+                log_info("Key management service cleaned up")
+
+            if self.encryption:
+                await self.encryption.cleanup()
+                log_info("Encryption service cleaned up")
+
+            if self.storage:
+                await self.storage.cleanup()
+                log_info("Storage service cleaned up")
+
+            if self.database:
+                await self.database.cleanup()
+                log_info("Database service cleaned up")
+
+            self.initialized = False
+            log_info("Service provider cleanup complete")
 
         except Exception as e:
-            log_error("Error in cleanup process", {"error": str(e)})
+            log_error(f"Error during service provider cleanup: {str(e)}")
             raise
 
-    def get(self, service_type: Type[T]) -> Optional[T]:
-        """Get service by type"""
-        if not self._initialized:
-            raise RuntimeError("Services not initialized")
-        return self._services.get(service_type)
+    def _load_settings(self) -> Dict:
+        """Load settings from environment."""
+        import os
 
-    async def _init_database(self) -> DatabaseInterface:
-        """Initialize database service"""
-        try:
-            db = DatabaseService()
-            await db.initialize_database()
-            return db
-        except Exception as e:
-            log_error("Failed to initialize database", {"error": str(e)})
-            raise
+        return {
+            'database_url': os.getenv('DATABASE_URL', 'postgresql://user:pass@localhost/db'),
+            'storage_path': os.getenv('STORAGE_PATH', '/data'),
+            'encryption_key': os.getenv('ENCRYPTION_KEY', 'default-key'),
+            'temp_dir': os.getenv('TEMP_DIR', '/tmp'),
+            'cache_dir': os.getenv('CACHE_DIR', '/cache'),
+            'max_file_size': int(os.getenv('MAX_FILE_SIZE', '104857600')),  # 100MB
+            'allowed_extensions': os.getenv('ALLOWED_EXTENSIONS', '.mp3,.wav,.m4a').split(','),
+            'cleanup_interval': int(os.getenv('CLEANUP_INTERVAL', '3600')),  # 1 hour
+            'job_timeout': int(os.getenv('JOB_TIMEOUT', '3600')),  # 1 hour
+            'retry_limit': int(os.getenv('RETRY_LIMIT', '3')),
+            'worker_count': int(os.getenv('WORKER_COUNT', '4'))
+        }
 
-    async def _init_key_management(self) -> KeyManagementInterface:
-        """Initialize key management service"""
-        try:
-            key_mgmt = KeyManagementService()
-            # No async initialization needed
-            return key_mgmt
-        except Exception as e:
-            log_error("Failed to initialize key management", {"error": str(e)})
-            raise
-
-    async def _init_encryption(
-        self,
-        key_mgmt: KeyManagementInterface
-    ) -> EncryptionInterface:
-        """Initialize encryption service"""
-        try:
-            encryption = EncryptionService()
-            # No async initialization needed
-            return encryption
-        except Exception as e:
-            log_error("Failed to initialize encryption", {"error": str(e)})
-            raise
-
-    async def _init_storage(
-        self,
-        db: DatabaseInterface,
-        encryption: EncryptionInterface
-    ) -> StorageInterface:
-        """Initialize storage service"""
-        try:
-            storage = StorageService(
-                database_service=db,
-                encryption_service=encryption
-            )
-            await storage._init_buckets()
-            return storage
-        except Exception as e:
-            log_error("Failed to initialize storage", {"error": str(e)})
-            raise
-
-    async def _init_job_manager(
-        self,
-        db: DatabaseInterface,
-        storage: StorageInterface
-    ) -> JobManagerInterface:
-        """Initialize job manager service"""
-        try:
-            job_manager = JobManager(
-                storage=storage,
-                db=db
-            )
-            await job_manager.start()
-            return job_manager
-        except Exception as e:
-            log_error("Failed to initialize job manager", {"error": str(e)})
-            raise
-
-    async def _init_zip_handler(
-        self,
-        storage: StorageInterface,
-        job_manager: JobManagerInterface
-    ) -> ZipHandlerInterface:
-        """Initialize ZIP handler service"""
-        try:
-            zip_handler = ZipHandler(
-                storage=storage,
-                job_manager=job_manager
-            )
-            # No async initialization needed
-            return zip_handler
-        except Exception as e:
-            log_error("Failed to initialize ZIP handler", {"error": str(e)})
-            raise
+# Global service provider instance
+service_provider = ServiceProvider()

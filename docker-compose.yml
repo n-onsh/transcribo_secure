@@ -88,68 +88,6 @@ services:
       retries: 3
     restart: unless-stopped
 
-  loki:
-    image: grafana/loki:2.9.3
-    container_name: transcribo-secure-loki
-    command: -config.file=/etc/loki/local-config.yaml
-    volumes:
-      - loki_data:/loki
-      - ./infrastructure/docker/loki/local-config.yaml:/etc/loki/local-config.yaml
-    networks:
-      - transcribo-secure-network
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:3100/ready || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  tempo:
-    image: grafana/tempo:2.3.1
-    container_name: transcribo-secure-tempo
-    command: ["-config.file=/etc/tempo/tempo.yaml"]
-    ports:
-      - "3200:3200"  # Tempo HTTP
-      - "4317:4317"  # OTLP gRPC
-      - "4318:4318"  # OTLP HTTP
-    volumes:
-      - tempo_data:/tmp/tempo
-      - ./infrastructure/docker/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
-    networks:
-      - transcribo-secure-network
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:3200/ready || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.96.0
-    container_name: transcribo-secure-otel-collector
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    ports:
-      - "4319:4317"  # OTLP gRPC
-      - "4320:4318"  # OTLP HTTP
-      - "8889:8889"  # Prometheus metrics
-      - "13133:13133"  # Health check
-    volumes:
-      - ./infrastructure/docker/otel/collector-config.yaml:/etc/otel-collector-config.yaml
-    depends_on:
-      loki:
-        condition: service_started
-      tempo:
-        condition: service_started
-    networks:
-      - transcribo-secure-network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.otel-metrics.rule=Host(`otel.localhost`) && PathPrefix(`/metrics`)"
-      - "traefik.http.routers.otel-metrics.entrypoints=websecure"
-      - "traefik.http.routers.otel-metrics.tls=true"
-      - "traefik.http.services.otel-metrics.loadbalancer.server.port=8889"
-    restart: unless-stopped
-
   backend:
     build:
       context: "./backend"
@@ -182,9 +120,6 @@ services:
       - HF_AUTH_TOKEN=${HF_AUTH_TOKEN}
       - MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_SERVICE_NAME=backend
-      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
       - TRANSCRIBER_URL=https://transcriber.localhost
     command: ["python", "-m", "src.main"]
     depends_on:
@@ -192,8 +127,6 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      otel-collector:
-        condition: service_started
     networks:
       - transcribo-secure-network
     labels:
@@ -229,17 +162,6 @@ services:
     environment:
       - BACKEND_API_URL=http://backend:8080/api/v1
       - REFRESH_INTERVAL=${REFRESH_INTERVAL}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_SERVICE_NAME=frontend
-      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
-      - OTEL_PYTHON_LOG_CORRELATION=true
-      - OTEL_METRICS_EXPORTER=otlp
-      - OTEL_TRACES_EXPORTER=otlp
-      - OTEL_LOGS_EXPORTER=otlp
-      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-      - OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/protobuf
-      - OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=http://otel-collector:4318/v1/metrics
-      - OTEL_METRIC_EXPORT_INTERVAL=10000
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
@@ -249,9 +171,6 @@ services:
       - "./.env:/app/.env:ro"
     networks:
       - transcribo-secure-network
-    depends_on:
-      otel-collector:
-        condition: service_started
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.frontend.rule=Host(`app.localhost`)"
@@ -282,9 +201,6 @@ services:
       - HF_AUTH_TOKEN=${HF_AUTH_TOKEN}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_SERVICE_NAME=transcriber
-      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - SUPPORTED_LANGUAGES=${SUPPORTED_LANGUAGES:-de,en,fr,it}
       - DEFAULT_LANGUAGE=${DEFAULT_LANGUAGE:-de}
@@ -294,9 +210,6 @@ services:
       - "pip_cache:/root/.cache/pip"
       - "torch_cache:/root/.cache/torch"
       - "./.env:/app/.env:ro"
-    depends_on:
-      otel-collector:
-        condition: service_started
     networks:
       - transcribo-secure-network
     deploy:
@@ -390,9 +303,6 @@ services:
       - "./.env:/app/.env:ro"
     networks:
       - transcribo-secure-network
-    depends_on:
-      otel-collector:
-        condition: service_started
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.grafana.rule=Host(`metrics.localhost`)"
@@ -412,6 +322,4 @@ volumes:
   pip_cache:
   torch_cache:
   grafana_data:
-  loki_data:
-  tempo_data:
   prometheus_data:

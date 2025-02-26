@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transcription Editor</title>
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .editor-container {
+            display: flex;
+            height: calc(100vh - 56px);
+        }
+        .media-panel {
+            width: 40%;
+            padding: 1rem;
+            border-right: 1px solid #dee2e6;
+            display: flex;
+            flex-direction: column;
+        }
+        .transcript-panel {
+            width: 60%;
+            padding: 1rem;
+            overflow-y: auto;
+        }
+        .segment {
+            padding: 0.5rem;
+            margin-bottom: 0.5rem;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .segment:hover {
+            background-color: #f8f9fa;
+        }
+        .segment.active {
+            background-color: #e9ecef;
+        }
+        .speaker-label {
+            font-weight: bold;
+            color: #0d6efd;
+        }
+        .timestamp {
+            color: #6c757d;
+            font-size: 0.875rem;
+        }
+        .segment-controls {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 0.5rem;
+        }
+        .segment-controls button {
+            margin-left: 0.5rem;
+        }
+        .media-controls {
+            margin-top: 1rem;
+        }
+        .speaker-management {
+            margin-top: auto;
+            padding: 1rem;
+            background-color: #f8f9fa;
+            border-radius: 0.5rem;
+        }
+        .speaker-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        .speaker-color {
+            width: 1rem;
+            height: 1rem;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+        .segment-text {
+            outline: none;
+            padding: 0.25rem;
+            border-radius: 0.25rem;
+            min-height: 2rem;
+        }
+        .segment-text:focus {
+            background-color: #fff;
+            box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+        }
+        .foreign-language {
+            background-color: #fff3cd;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">Transcribo</a>
+            <div class="ms-auto">
+                <button class="btn btn-light me-2" id="save-btn">
+                    <i class="bi bi-save"></i> Save
+                </button>
+                <div class="btn-group">
+                    <button class="btn btn-light dropdown-toggle" data-bs-toggle="dropdown">
+                        <i class="bi bi-download"></i> Export
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        <li>
+                            <a class="dropdown-item" href="/editor/{{ job_id }}/download">
+                                <i class="bi bi-file-earmark-code"></i> Download Editor
+                            </a>
+                        </li>
+                        <li>
+                            <a class="dropdown-item" href="#" id="export-viewer-btn">
+                                <i class="bi bi-eye"></i> Export as Viewer
+                            </a>
+                        </li>
+                        <li>
+                            <a class="dropdown-item" href="#" id="export-text-btn">
+                                <i class="bi bi-file-text"></i> Export as Text
+                            </a>
+                        </li>
+                        <li>
+                            <a class="dropdown-item" href="#" id="export-srt-btn">
+                                <i class="bi bi-badge-cc"></i> Export as SRT
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Editor Container -->
+    <div class="editor-container">
+        <!-- Media Panel -->
+        <div class="media-panel">
+            <!-- Media Player -->
+            <video id="media-player" controls class="w-100 mb-3">
+                <source src="{{ media_url }}" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
+
+            <!-- Playback Controls -->
+            <div class="media-controls">
+                <div class="mb-3">
+                    <label class="form-label">Playback Speed</label>
+                    <input type="range" class="form-range" id="speed-control" 
+                           min="0.5" max="2" step="0.1" value="1">
+                    <div class="text-center" id="speed-value">1.0x</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Jump Delay (seconds)</label>
+                    <input type="number" class="form-control" id="delay-control" 
+                           min="0" max="10" step="0.5" value="0">
+                </div>
+            </div>
+
+            <!-- Speaker Management -->
+            <div class="speaker-management mb-3">
+                <h6 class="mb-3">Speakers</h6>
+                <div id="speakers-container">
+                    <!-- Speakers will be added here -->
+                </div>
+                <button class="btn btn-sm btn-outline-primary mt-2" id="add-speaker-btn">
+                    <i class="bi bi-plus"></i> Add Speaker
+                </button>
+            </div>
+        </div>
+
+        <!-- Transcript Panel -->
+        <div class="transcript-panel">
+            <div id="segments-container">
+                <!-- Segments will be added here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Templates -->
+    <template id="segment-template">
+        <div class="segment" data-start="" data-end="">
+            <div class="d-flex justify-content-between">
+                <div class="speaker-label"></div>
+                <div class="timestamp"></div>
+            </div>
+            <div class="segment-text" contenteditable="true"></div>
+            <div class="segment-controls">
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input foreign-language-check" type="checkbox">
+                    <label class="form-check-label">Foreign Language</label>
+                </div>
+                <button class="btn btn-sm btn-outline-primary split-btn">
+                    <i class="bi bi-scissors"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-danger delete-btn">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+        </div>
+    </template>
+
+    <template id="speaker-template">
+        <div class="speaker-item">
+            <div class="speaker-color"></div>
+            <input type="text" class="form-control form-control-sm speaker-name" 
+                   placeholder="Speaker Name">
+        </div>
+    </template>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/assets/editor.js"></script>
+</body>
+</html>

@@ -1,163 +1,225 @@
-from opentelemetry import metrics
+"""Frontend metrics configuration and utilities."""
 
-# Get meter
-meter = metrics.get_meter_provider().get_meter("frontend")
+from prometheus_client import Counter, Histogram, Gauge
+import asyncio
+import time
 
-# Create metrics
-http_requests_total = meter.create_counter(
+# HTTP metrics
+HTTP_REQUESTS_TOTAL = Counter(
     "transcribo_frontend_http_requests_total",
-    description="Total number of HTTP requests",
-    unit="1"
+    "Total number of HTTP requests",
+    ["method", "endpoint"]
 )
 
-http_request_duration = meter.create_histogram(
+HTTP_REQUEST_DURATION = Histogram(
     "transcribo_frontend_http_request_duration_seconds",
-    description="HTTP request duration",
-    unit="s"
+    "HTTP request duration",
+    ["method", "endpoint"]
 )
 
-file_upload_total = meter.create_counter(
+FILE_UPLOAD_TOTAL = Counter(
     "transcribo_frontend_file_uploads_total",
-    description="Total number of file uploads",
-    unit="1"
+    "Total number of file uploads",
+    ["status"]
 )
 
-job_status_total = meter.create_counter(
+JOB_STATUS_TOTAL = Counter(
     "transcribo_frontend_job_status_total",
-    description="Total number of jobs by status",
-    unit="1"
+    "Total number of jobs by status",
+    ["status"]
 )
 
 # Performance Metrics
-time_to_interactive = meter.create_histogram(
+TIME_TO_INTERACTIVE = Histogram(
     "transcribo_frontend_time_to_interactive_seconds",
-    description="Time until page becomes interactive",
-    unit="s"
+    "Time until page becomes interactive",
+    ["page"]
 )
 
-api_response_time = meter.create_histogram(
+API_RESPONSE_TIME = Histogram(
     "transcribo_frontend_api_response_seconds",
-    description="API request duration",
-    unit="s"
+    "API request duration",
+    ["endpoint", "method"]
 )
 
-frontend_render_time = meter.create_histogram(
+FRONTEND_RENDER_TIME = Histogram(
     "transcribo_frontend_render_duration_seconds",
-    description="Component render duration",
-    unit="s"
+    "Component render duration",
+    ["component"]
 )
 
 # Task Metrics
-task_completion = meter.create_counter(
+TASK_COMPLETION = Counter(
     "transcribo_frontend_task_completion_total",
-    description="Number of completed tasks",
-    unit="1"
+    "Number of completed tasks",
+    ["type"]
 )
 
-task_abandonment = meter.create_counter(
+TASK_ABANDONMENT = Counter(
     "transcribo_frontend_task_abandonment_total",
-    description="Number of abandoned tasks",
-    unit="1"
+    "Number of abandoned tasks",
+    ["type"]
 )
 
-task_duration = meter.create_histogram(
+TASK_DURATION = Histogram(
     "transcribo_frontend_task_duration_seconds",
-    description="Time spent on tasks",
-    unit="s"
+    "Time spent on tasks",
+    ["type"]
 )
 
 # Session Metrics
-session_duration = meter.create_histogram(
+SESSION_DURATION = Histogram(
     "transcribo_frontend_session_duration_seconds",
-    description="User session duration",
-    unit="s"
+    "User session duration"
 )
 
-session_activity = meter.create_counter(
+SESSION_ACTIVITY = Counter(
     "transcribo_frontend_session_actions_total",
-    description="Number of user actions",
-    unit="1"
+    "Number of user actions",
+    ["action_type"]
 )
 
-concurrent_users = meter.create_up_down_counter(
+CONCURRENT_USERS = Gauge(
     "transcribo_frontend_concurrent_users",
-    description="Number of active users",
-    unit="1"
+    "Number of active users"
 )
 
 # Navigation Metrics
-page_transitions = meter.create_counter(
+PAGE_TRANSITIONS = Counter(
     "transcribo_frontend_page_transitions_total",
-    description="Number of page transitions",
-    unit="1"
+    "Number of page transitions",
+    ["from_page", "to_page"]
 )
 
-feature_usage = meter.create_counter(
+FEATURE_USAGE = Counter(
     "transcribo_frontend_feature_usage_total",
-    description="Feature usage count",
-    unit="1"
+    "Feature usage count",
+    ["feature"]
 )
 
 # Error Metrics
-ui_errors = meter.create_counter(
+UI_ERRORS = Counter(
     "transcribo_frontend_errors_total",
-    description="Number of UI errors",
-    unit="1"
+    "Number of UI errors",
+    ["error_type"]
 )
 
-validation_failures = meter.create_counter(
+VALIDATION_FAILURES = Counter(
     "transcribo_frontend_validation_failures_total",
-    description="Number of validation failures",
-    unit="1"
+    "Number of validation failures",
+    ["field"]
 )
 
 # Resource Metrics
-client_memory = meter.create_up_down_counter(
+CLIENT_MEMORY = Gauge(
     "transcribo_frontend_memory_bytes",
-    description="Frontend memory usage",
-    unit="By"
+    "Frontend memory usage",
+    ["type"]  # heap/total
 )
 
-client_cpu = meter.create_up_down_counter(
+CLIENT_CPU = Gauge(
     "transcribo_frontend_cpu_usage_percent",
-    description="Frontend CPU usage",
-    unit="1"
+    "Frontend CPU usage"
 )
 
-def setup_metrics():
-    """Initialize metrics"""
-    global http_requests_total, http_request_duration, file_upload_total, job_status_total
+def increment_counter(counter: Counter, labels: dict = None):
+    """Increment a counter metric.
     
-    # Re-create metrics to ensure they are initialized after OpenTelemetry setup
-    http_requests_total = meter.create_counter(
-        "transcribo_frontend_http_requests_total",
-        description="Total number of HTTP requests",
-        unit="1"
-    )
+    Args:
+        counter: The counter metric to increment
+        labels: Optional dictionary of label values
+    """
+    if labels:
+        counter.labels(**labels).inc()
+    else:
+        counter.inc()
 
-    http_request_duration = meter.create_histogram(
-        "transcribo_frontend_http_request_duration_seconds",
-        description="HTTP request duration",
-        unit="s"
-    )
+def update_gauge(gauge: Gauge, value: float, labels: dict = None):
+    """Update a gauge metric.
+    
+    Args:
+        gauge: The gauge metric to update
+        value: The new value
+        labels: Optional dictionary of label values
+    """
+    if labels:
+        gauge.labels(**labels).set(value)
+    else:
+        gauge.set(value)
 
-    file_upload_total = meter.create_counter(
-        "transcribo_frontend_file_uploads_total",
-        description="Total number of file uploads",
-        unit="1"
-    )
+def observe_histogram(histogram: Histogram, value: float, labels: dict = None):
+    """Record a value in a histogram metric.
+    
+    Args:
+        histogram: The histogram metric to update
+        value: The value to record
+        labels: Optional dictionary of label values
+    """
+    if labels:
+        histogram.labels(**labels).observe(value)
+    else:
+        histogram.observe(value)
 
-    job_status_total = meter.create_counter(
-        "transcribo_frontend_job_status_total",
-        description="Total number of jobs by status",
-        unit="1"
-    )
+def track_time(histogram: Histogram, labels: dict = None):
+    """Decorator to track execution time of a function.
+    
+    Args:
+        histogram: The histogram metric to update
+        labels: Optional dictionary of label values
+    """
+    def decorator(func):
+        async def async_wrapper(*args, **kwargs):
+            start = time.time()
+            try:
+                result = await func(*args, **kwargs)
+                duration = time.time() - start
+                observe_histogram(histogram, duration, labels)
+                return result
+            except Exception as e:
+                duration = time.time() - start
+                error_labels = {**labels, "error": type(e).__name__} if labels else {"error": type(e).__name__}
+                observe_histogram(histogram, duration, error_labels)
+                raise
+        
+        def sync_wrapper(*args, **kwargs):
+            start = time.time()
+            try:
+                result = func(*args, **kwargs)
+                duration = time.time() - start
+                observe_histogram(histogram, duration, labels)
+                return result
+            except Exception as e:
+                duration = time.time() - start
+                error_labels = {**labels, "error": type(e).__name__} if labels else {"error": type(e).__name__}
+                observe_histogram(histogram, duration, error_labels)
+                raise
+                
+        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+    return decorator
 
-# Export metrics
-__all__ = [
-    'http_requests_total',
-    'http_request_duration', 
-    'file_upload_total',
-    'job_status_total',
-    'setup_metrics'
-]
+def track_errors(counter: Counter, labels: dict = None):
+    """Decorator to track errors in a function.
+    
+    Args:
+        counter: The counter metric to increment on error
+        labels: Optional dictionary of label values
+    """
+    def decorator(func):
+        async def async_wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                error_labels = {**labels, "error": type(e).__name__} if labels else {"error": type(e).__name__}
+                increment_counter(counter, error_labels)
+                raise
+        
+        def sync_wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                error_labels = {**labels, "error": type(e).__name__} if labels else {"error": type(e).__name__}
+                increment_counter(counter, error_labels)
+                raise
+                
+        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+    return decorator

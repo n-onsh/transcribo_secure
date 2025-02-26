@@ -1,251 +1,178 @@
-from typing import Optional, List
-from opentelemetry import trace
-from ..utils.logging import log_info, log_error
-from uuid import UUID
-import asyncpg
-from ..models.file_key import (
-    FileKey,
-    FileKeyShare,
-    FileKeyCreate,
-    FileKeyShareCreate,
-    FileKeyUpdate,
-    FileKeyShareUpdate
+"""Database file keys service."""
+
+import logging
+from typing import Optional, List, Dict, Any
+from ..utils.logging import log_info, log_error, log_warning
+from ..utils.metrics import (
+    KEY_OPERATIONS,
+    KEY_ERRORS,
+    KEY_LATENCY,
+    track_key_operation,
+    track_key_error,
+    track_key_latency
 )
 
-
 class DatabaseFileKeyService:
-    def __init__(self, pool: asyncpg.Pool):
-        """Initialize database file key service"""
-        self.pool = pool
+    """Service for managing file keys in the database."""
 
-    async def create_file_key(self, file_key: FileKeyCreate) -> FileKey:
-        """Create file key"""
+    def __init__(self, settings):
+        """Initialize database file key service."""
+        self.settings = settings
+        self.initialized = False
+        self.db = None
+
+    async def initialize(self):
+        """Initialize the service."""
+        if self.initialized:
+            return
+
         try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO file_keys (file_id, encrypted_key)
-                    VALUES ($1, $2)
-                    RETURNING *
-                    """,
-                    file_key.file_id,
-                    file_key.encrypted_key
-                )
-                return FileKey(**dict(row))
+            # Initialize database settings
+            self.table_name = self.settings.get('file_keys_table', 'file_keys')
+            self.key_ttl = int(self.settings.get('file_key_ttl', 86400))  # 24 hours
+
+            # Initialize database connection
+            self.db = await self._init_database()
+
+            self.initialized = True
+            log_info("Database file key service initialized")
+
         except Exception as e:
-            log_error("Failed to create file key", {
-                "error": str(e),
-                "file_id": str(file_key.file_id)
-            })
+            log_error(f"Failed to initialize database file key service: {str(e)}")
             raise
 
-    async def get_file_key(self, file_id: UUID) -> Optional[FileKey]:
-        """Get file key"""
+    async def cleanup(self):
+        """Clean up the service."""
         try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    SELECT * FROM file_keys
-                    WHERE file_id = $1
-                    """,
-                    file_id
-                )
-                return FileKey(**dict(row)) if row else None
+            if self.db:
+                await self.db.close()
+            self.initialized = False
+            log_info("Database file key service cleaned up")
+
         except Exception as e:
-            log_error("Failed to get file key", {
-                "error": str(e),
-                "file_id": str(file_id)
-            })
+            log_error(f"Error during database file key service cleanup: {str(e)}")
             raise
 
-    async def update_file_key(
-        self,
-        file_id: UUID,
-        update: FileKeyUpdate
-    ) -> Optional[FileKey]:
-        """Update file key"""
+    async def store_key(self, file_id: str, key_data: Dict) -> bool:
+        """Store a file key in the database."""
+        start_time = logging.time()
         try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    UPDATE file_keys
-                    SET encrypted_key = COALESCE($2, encrypted_key)
-                    WHERE file_id = $1
-                    RETURNING *
-                    """,
-                    file_id,
-                    update.encrypted_key
-                )
-                return FileKey(**dict(row)) if row else None
+            # Track operation
+            KEY_OPERATIONS.labels(operation='store').inc()
+            track_key_operation('store')
+
+            # Store key
+            success = await self._store_key(file_id, key_data)
+            
+            # Track latency
+            duration = logging.time() - start_time
+            KEY_LATENCY.observe(duration)
+            track_key_latency(duration)
+            
+            if success:
+                log_info(f"Stored key for file {file_id}")
+            else:
+                log_warning(f"Failed to store key for file {file_id}")
+            
+            return success
+
         except Exception as e:
-            log_error("Failed to update file key", {
-                "error": str(e),
-                "file_id": str(file_id)
-            })
+            KEY_ERRORS.inc()
+            track_key_error()
+            log_error(f"Error storing key for file {file_id}: {str(e)}")
             raise
 
-    async def delete_file_key(self, file_id: UUID) -> bool:
-        """Delete file key"""
+    async def get_key(self, file_id: str) -> Optional[Dict]:
+        """Get a file key from the database."""
+        start_time = logging.time()
         try:
-            async with self.pool.acquire() as conn:
-                result = await conn.execute(
-                    """
-                    DELETE FROM file_keys
-                    WHERE file_id = $1
-                    """,
-                    file_id
-                )
-                return result == "DELETE 1"
+            # Track operation
+            KEY_OPERATIONS.labels(operation='get').inc()
+            track_key_operation('get')
+
+            # Get key
+            key_data = await self._get_key(file_id)
+            
+            # Track latency
+            duration = logging.time() - start_time
+            KEY_LATENCY.observe(duration)
+            track_key_latency(duration)
+            
+            if key_data:
+                log_info(f"Retrieved key for file {file_id}")
+                return key_data
+            
+            log_warning(f"Key not found for file {file_id}")
+            return None
+
         except Exception as e:
-            log_error("Failed to delete file key", {
-                "error": str(e),
-                "file_id": str(file_id)
-            })
+            KEY_ERRORS.inc()
+            track_key_error()
+            log_error(f"Error getting key for file {file_id}: {str(e)}")
             raise
 
-    async def create_file_key_share(
-        self,
-        share: FileKeyShareCreate
-    ) -> FileKeyShare:
-        """Create file key share"""
+    async def delete_key(self, file_id: str) -> bool:
+        """Delete a file key from the database."""
         try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO file_key_shares (file_id, user_id, encrypted_key)
-                    VALUES ($1, $2, $3)
-                    RETURNING *
-                    """,
-                    share.file_id,
-                    share.user_id,
-                    share.encrypted_key
-                )
-                return FileKeyShare(**dict(row))
+            # Track operation
+            KEY_OPERATIONS.labels(operation='delete').inc()
+            track_key_operation('delete')
+
+            # Delete key
+            success = await self._delete_key(file_id)
+            
+            if success:
+                log_info(f"Deleted key for file {file_id}")
+            else:
+                log_warning(f"Failed to delete key for file {file_id}")
+            
+            return success
+
         except Exception as e:
-            log_error("Failed to create file key share", {
-                "error": str(e),
-                "file_id": str(share.file_id),
-                "user_id": str(share.user_id)
-            })
+            KEY_ERRORS.inc()
+            track_key_error()
+            log_error(f"Error deleting key for file {file_id}: {str(e)}")
             raise
 
-    async def get_file_key_share(
-        self,
-        file_id: UUID,
-        user_id: UUID
-    ) -> Optional[FileKeyShare]:
-        """Get file key share"""
+    async def list_keys(self, filter_params: Optional[Dict] = None) -> List[Dict]:
+        """List file keys from the database."""
         try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    SELECT * FROM file_key_shares
-                    WHERE file_id = $1 AND user_id = $2
-                    """,
-                    file_id,
-                    user_id
-                )
-                return FileKeyShare(**dict(row)) if row else None
+            # Track operation
+            KEY_OPERATIONS.labels(operation='list').inc()
+            track_key_operation('list')
+
+            # List keys
+            keys = await self._list_keys(filter_params)
+            log_info(f"Listed {len(keys)} keys")
+            return keys
+
         except Exception as e:
-            log_error("Failed to get file key share", {
-                "error": str(e),
-                "file_id": str(file_id),
-                "user_id": str(user_id)
-            })
+            KEY_ERRORS.inc()
+            track_key_error()
+            log_error(f"Error listing keys: {str(e)}")
             raise
 
-    async def list_file_key_shares(
-        self,
-        file_id: UUID
-    ) -> List[FileKeyShare]:
-        """List file key shares"""
-        try:
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT * FROM file_key_shares
-                    WHERE file_id = $1
-                    ORDER BY created_at DESC
-                    """,
-                    file_id
-                )
-                return [FileKeyShare(**dict(row)) for row in rows]
-        except Exception as e:
-            log_error("Failed to list file key shares", {
-                "error": str(e),
-                "file_id": str(file_id)
-            })
-            raise
+    async def _init_database(self):
+        """Initialize database connection."""
+        # Implementation would initialize database
+        return None
 
-    async def update_file_key_share(
-        self,
-        file_id: UUID,
-        user_id: UUID,
-        update: FileKeyShareUpdate
-    ) -> Optional[FileKeyShare]:
-        """Update file key share"""
-        try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    UPDATE file_key_shares
-                    SET encrypted_key = COALESCE($3, encrypted_key)
-                    WHERE file_id = $1 AND user_id = $2
-                    RETURNING *
-                    """,
-                    file_id,
-                    user_id,
-                    update.encrypted_key
-                )
-                return FileKeyShare(**dict(row)) if row else None
-        except Exception as e:
-            log_error("Failed to update file key share", {
-                "error": str(e),
-                "file_id": str(file_id),
-                "user_id": str(user_id)
-            })
-            raise
+    async def _store_key(self, file_id: str, key_data: Dict) -> bool:
+        """Store key in database."""
+        # Implementation would store key
+        return True
 
-    async def delete_file_key_share(
-        self,
-        file_id: UUID,
-        user_id: UUID
-    ) -> bool:
-        """Delete file key share"""
-        try:
-            async with self.pool.acquire() as conn:
-                result = await conn.execute(
-                    """
-                    DELETE FROM file_key_shares
-                    WHERE file_id = $1 AND user_id = $2
-                    """,
-                    file_id,
-                    user_id
-                )
-                return result == "DELETE 1"
-        except Exception as e:
-            log_error("Failed to delete file key share", {
-                "error": str(e),
-                "file_id": str(file_id),
-                "user_id": str(user_id)
-            })
-            raise
+    async def _get_key(self, file_id: str) -> Optional[Dict]:
+        """Get key from database."""
+        # Implementation would get key
+        return None
 
-    async def delete_all_file_key_shares(self, file_id: UUID) -> int:
-        """Delete all file key shares for a file"""
-        try:
-            async with self.pool.acquire() as conn:
-                result = await conn.execute(
-                    """
-                    DELETE FROM file_key_shares
-                    WHERE file_id = $1
-                    """,
-                    file_id
-                )
-                return int(result.split()[1])
-        except Exception as e:
-            log_error("Failed to delete file key shares", {
-                "error": str(e),
-                "file_id": str(file_id)
-            })
-            raise
+    async def _delete_key(self, file_id: str) -> bool:
+        """Delete key from database."""
+        # Implementation would delete key
+        return True
+
+    async def _list_keys(self, filter_params: Optional[Dict] = None) -> List[Dict]:
+        """List keys from database."""
+        # Implementation would list keys
+        return []

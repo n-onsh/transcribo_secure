@@ -3,7 +3,6 @@ let state = {
     player: null,
     isDirty: false,
     lastSaved: null,
-    autoSaveInterval: null,
     currentSegment: null
 };
 
@@ -11,21 +10,20 @@ let state = {
 document.addEventListener('DOMContentLoaded', () => {
     initializePlayer();
     initializeEventListeners();
-    initializeAutoSave();
     loadEditorState();
 });
 
 // Player initialization
 function initializePlayer() {
-    state.player = document.getElementById('audio-player');
+    state.player = document.getElementById('media-player');
     
     // Playback rate control
-    document.getElementById('playback-rate').addEventListener('change', (e) => {
+    document.getElementById('speed-control').addEventListener('change', (e) => {
         state.player.playbackRate = parseFloat(e.target.value);
     });
     
     // Jump back control
-    const jumpBack = document.getElementById('jump-back');
+    const jumpBack = document.getElementById('delay-control');
     document.addEventListener('keydown', (e) => {
         if (e.code === 'Space' && e.ctrlKey) {
             e.preventDefault();
@@ -47,9 +45,9 @@ function initializeEventListeners() {
     document.getElementById('save-btn').addEventListener('click', saveEditorState);
     
     // Export buttons
-    document.getElementById('export-txt-btn').addEventListener('click', exportText);
-    document.getElementById('export-srt-btn').addEventListener('click', exportSRT);
-    document.getElementById('create-viewer-btn').addEventListener('click', createViewer);
+    document.getElementById('export-viewer-btn')?.addEventListener('click', () => exportTranscription('viewer'));
+    document.getElementById('export-text-btn')?.addEventListener('click', () => exportTranscription('text'));
+    document.getElementById('export-srt-btn')?.addEventListener('click', () => exportTranscription('srt'));
     
     // Speaker names
     document.querySelectorAll('.speaker-name').forEach(input => {
@@ -125,18 +123,21 @@ function initializeEventListeners() {
     });
 }
 
-// Auto-save
-function initializeAutoSave() {
-    state.autoSaveInterval = setInterval(() => {
-        if (state.isDirty) {
-            saveEditorState();
-        }
-    }, 60000); // Every minute
-}
-
 // State management
 async function loadEditorState() {
     try {
+        // Check if we're in standalone mode
+        if (window.location.protocol === 'file:') {
+            // Load from localStorage
+            const savedState = localStorage.getItem('editorState');
+            if (savedState) {
+                const state = JSON.parse(savedState);
+                applyEditorState(state);
+            }
+            return;
+        }
+
+        // Load from server
         const response = await fetch(`/api/editor/state/${EDITOR_CONFIG.jobId}`);
         if (response.ok) {
             const savedState = await response.json();
@@ -158,7 +159,7 @@ async function saveEditorState() {
             })),
             segments: Array.from(document.querySelectorAll('.segment')).map(div => ({
                 id: div.dataset.segmentId,
-                speakerId: div.querySelector('.speaker-select').value,
+                speakerId: div.querySelector('.speaker-select')?.value,
                 text: div.querySelector('.segment-text').innerText,
                 start: parseFloat(div.dataset.start),
                 end: parseFloat(div.dataset.end),
@@ -166,7 +167,17 @@ async function saveEditorState() {
             })),
             lastSaved: new Date().toISOString()
         };
+
+        // Check if we're in standalone mode
+        if (window.location.protocol === 'file:') {
+            // Save to localStorage
+            localStorage.setItem('editorState', JSON.stringify(currentState));
+            state.isDirty = false;
+            state.lastSaved = currentState.lastSaved;
+            return;
+        }
         
+        // Save to server
         const response = await fetch(`/api/editor/state/${EDITOR_CONFIG.jobId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -176,7 +187,6 @@ async function saveEditorState() {
         if (response.ok) {
             state.isDirty = false;
             state.lastSaved = currentState.lastSaved;
-            document.getElementById('last-saved').textContent = new Date().toLocaleTimeString();
         }
     } catch (error) {
         console.error('Failed to save editor state:', error);
@@ -202,7 +212,6 @@ function applyEditorState(savedState) {
     });
     
     state.lastSaved = savedState.lastSaved;
-    document.getElementById('last-saved').textContent = new Date(state.lastSaved).toLocaleTimeString();
 }
 
 // Segment operations
@@ -304,54 +313,59 @@ function navigateSegments(direction) {
 }
 
 // Export operations
-async function exportText() {
-    try {
-        const response = await fetch(`/api/transcription/${EDITOR_CONFIG.jobId}/text`);
-        if (response.ok) {
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${EDITOR_CONFIG.jobId}.txt`;
-            a.click();
-            URL.revokeObjectURL(url);
-        }
-    } catch (error) {
-        console.error('Failed to export text:', error);
-    }
-}
+async function exportTranscription(format) {
+    // In standalone mode, export locally
+    if (window.location.protocol === 'file:') {
+        const segments = Array.from(document.querySelectorAll('.segment'))
+            .map(segment => ({
+                start: parseFloat(segment.dataset.start),
+                end: parseFloat(segment.dataset.end),
+                text: segment.querySelector('.segment-text').textContent,
+                speaker: segment.querySelector('.speaker-label').textContent
+            }));
 
-async function exportSRT() {
-    try {
-        const response = await fetch(`/api/transcription/${EDITOR_CONFIG.jobId}/srt`);
-        if (response.ok) {
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${EDITOR_CONFIG.jobId}.srt`;
-            a.click();
-            URL.revokeObjectURL(url);
+        let content = '';
+        if (format === 'text') {
+            content = segments.map(s => `${s.speaker}: ${s.text}`).join('\n\n');
+        } else if (format === 'srt') {
+            content = segments.map((s, i) => {
+                const start = new Date(s.start * 1000).toISOString().substr(11, 12).replace('.', ',');
+                const end = new Date(s.end * 1000).toISOString().substr(11, 12).replace('.', ',');
+                return `${i + 1}\n${start} --> ${end}\n${s.speaker}: ${s.text}\n`;
+            }).join('\n');
         }
-    } catch (error) {
-        console.error('Failed to export SRT:', error);
-    }
-}
 
-async function createViewer() {
+        // Create and download file
+        const blob = new Blob([content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `transcription.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        URL.revokeObjectURL(url);
+        a.remove();
+        return;
+    }
+
     try {
-        const response = await fetch(`/api/transcription/${EDITOR_CONFIG.jobId}/viewer`);
-        if (response.ok) {
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${EDITOR_CONFIG.jobId}_viewer.html`;
-            a.click();
-            URL.revokeObjectURL(url);
+        const response = await fetch(`/api/editor/${EDITOR_CONFIG.jobId}/export/${format}`);
+        if (!response.ok) {
+            throw new Error(`Failed to export as ${format}`);
         }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `transcription.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        URL.revokeObjectURL(url);
+        a.remove();
     } catch (error) {
-        console.error('Failed to create viewer:', error);
+        console.error(`Error exporting as ${format}:`, error);
+        alert(`Failed to export as ${format}`);
     }
 }
 
@@ -367,5 +381,4 @@ window.addEventListener('beforeunload', (e) => {
         e.preventDefault();
         e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
     }
-    clearInterval(state.autoSaveInterval);
 });
