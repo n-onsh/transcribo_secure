@@ -38,6 +38,7 @@ wheels/
 
 # Memory Bank
 memory-bank/
+oldrepo.md
 
 # Logs
 *.log
