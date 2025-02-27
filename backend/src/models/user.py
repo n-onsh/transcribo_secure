@@ -1,137 +1,139 @@
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Dict
+"""User model."""
+
+from typing import Optional, List, Dict, Any
 from datetime import datetime
-import uuid
+from uuid import UUID, uuid4
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Table, Column
+from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from .base import Base
 
-class UserBase(BaseModel):
-    """Base user model"""
-    email: EmailStr
-    name: Optional[str] = None
-    roles: List[str] = Field(default_factory=lambda: ["user"])
+# Association tables
+user_roles = Table(
+    'user_roles',
+    Base.metadata,
+    Column('user_id', PGUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
+    Column('role_id', PGUUID(as_uuid=True), ForeignKey('roles.id', ondelete='CASCADE'), primary_key=True),
+    Column('created_at', DateTime(timezone=True), nullable=False, server_default='CURRENT_TIMESTAMP')
+)
 
-class UserCreate(UserBase):
-    """User creation model"""
-    password: str
+user_scopes = Table(
+    'user_scopes',
+    Base.metadata,
+    Column('user_id', PGUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
+    Column('scope_id', PGUUID(as_uuid=True), ForeignKey('scopes.id', ondelete='CASCADE'), primary_key=True),
+    Column('created_at', DateTime(timezone=True), nullable=False, server_default='CURRENT_TIMESTAMP')
+)
 
-class UserUpdate(BaseModel):
-    """User update model"""
-    email: Optional[EmailStr] = None
-    name: Optional[str] = None
-    password: Optional[str] = None
-    roles: Optional[List[str]] = None
-
-class User(UserBase):
-    """User model"""
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    hashed_password: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    last_login: Optional[datetime] = None
-    settings: Dict = Field(default_factory=dict)
-    metadata: Dict = Field(default_factory=dict)
-
-    class Config:
-        orm_mode = True
-
-class UserLogin(BaseModel):
-    """User login model"""
-    email: EmailStr
-    password: str
-
-class UserResponse(BaseModel):
-    """User response model"""
-    id: str
-    email: EmailStr
-    name: Optional[str]
-    roles: List[str]
-    created_at: datetime
-    last_login: Optional[datetime]
-
-class TokenResponse(BaseModel):
-    """Token response model"""
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-    user: UserResponse
-
-class PasswordReset(BaseModel):
-    """Password reset model"""
-    email: EmailStr
-
-class PasswordChange(BaseModel):
-    """Password change model"""
-    old_password: str
-    new_password: str
-
-class UserFilter(BaseModel):
-    """User filter model"""
-    email: Optional[str] = None
-    name: Optional[str] = None
-    role: Optional[str] = None
-    created_after: Optional[datetime] = None
-    created_before: Optional[datetime] = None
-
-    def apply(self, users: List[User]) -> List[User]:
-        """Apply filter to users"""
-        filtered = users
-        
-        if self.email:
-            filtered = [u for u in filtered if self.email.lower() in u.email.lower()]
-            
-        if self.name:
-            filtered = [u for u in filtered if u.name and self.name.lower() in u.name.lower()]
-            
-        if self.role:
-            filtered = [u for u in filtered if self.role in u.roles]
-            
-        if self.created_after:
-            filtered = [u for u in filtered if u.created_at >= self.created_after]
-            
-        if self.created_before:
-            filtered = [u for u in filtered if u.created_at <= self.created_before]
-            
-        return filtered
-
-class UserSort(BaseModel):
-    """User sort model"""
-    field: str = Field(default="email")  # email, name, created_at
-    ascending: bool = Field(default=True)
-
-    def apply(self, users: List[User]) -> List[User]:
-        """Apply sort to users"""
-        return sorted(
-            users,
-            key=lambda u: getattr(u, self.field),
-            reverse=not self.ascending
-        )
-
-class UserStats(BaseModel):
-    """User statistics model"""
-    total_users: int
-    users_by_role: Dict[str, int]
-    active_users: int  # logged in within last 30 days
-    new_users: int  # created within last 30 days
+class Role(Base):
+    """Role model."""
     
-    @classmethod
-    def from_users(cls, users: List[User]) -> "UserStats":
-        """Generate statistics from users"""
-        now = datetime.utcnow()
-        thirty_days_ago = now - timedelta(days=30)
+    __tablename__ = 'roles'
+    
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default='CURRENT_TIMESTAMP')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default='CURRENT_TIMESTAMP')
+    
+    # Relationships
+    users = relationship('User', secondary=user_roles, back_populates='roles')
+
+class Scope(Base):
+    """Scope model."""
+    
+    __tablename__ = 'scopes'
+    
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default='CURRENT_TIMESTAMP')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default='CURRENT_TIMESTAMP')
+    
+    # Relationships
+    users = relationship('User', secondary=user_scopes, back_populates='scopes')
+
+class User(Base):
+    """User model."""
+    
+    __tablename__ = 'users'
+    
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    username: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String(255), unique=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default='CURRENT_TIMESTAMP')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default='CURRENT_TIMESTAMP')
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    metadata: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    
+    # Relationships
+    roles: Mapped[List[Role]] = relationship(secondary=user_roles, back_populates='users')
+    scopes: Mapped[List[Scope]] = relationship(secondary=user_scopes, back_populates='users')
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert user to dictionary.
         
-        by_role = {}
-        for user in users:
-            for role in user.roles:
-                by_role[role] = by_role.get(role, 0) + 1
+        Returns:
+            Dictionary representation of user
+        """
+        return {
+            'id': str(self.id),
+            'username': self.username,
+            'email': self.email,
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'last_login': self.last_login.isoformat() if self.last_login else None,
+            'metadata': self.metadata,
+            'roles': [role.name for role in self.roles],
+            'scopes': [scope.name for scope in self.scopes]
+        }
+    
+    @property
+    def is_admin(self) -> bool:
+        """Check if user has admin role.
         
-        return cls(
-            total_users=len(users),
-            users_by_role=by_role,
-            active_users=sum(
-                1 for u in users
-                if u.last_login and u.last_login >= thirty_days_ago
-            ),
-            new_users=sum(
-                1 for u in users
-                if u.created_at >= thirty_days_ago
-            )
-        )
+        Returns:
+            True if user has admin role, False otherwise
+        """
+        return any(role.name == 'admin' for role in self.roles)
+    
+    def has_role(self, role_name: str) -> bool:
+        """Check if user has specific role.
+        
+        Args:
+            role_name: Role name to check
+            
+        Returns:
+            True if user has role, False otherwise
+        """
+        return any(role.name == role_name for role in self.roles)
+    
+    def has_scope(self, scope_name: str) -> bool:
+        """Check if user has specific scope.
+        
+        Args:
+            scope_name: Scope name to check
+            
+        Returns:
+            True if user has scope, False otherwise
+        """
+        return any(scope.name == scope_name for scope in self.scopes)
+    
+    def has_permission(self, resource: str, action: str) -> bool:
+        """Check if user has permission for resource action.
+        
+        Args:
+            resource: Resource name (e.g., 'files', 'jobs')
+            action: Action name (e.g., 'read', 'write')
+            
+        Returns:
+            True if user has permission, False otherwise
+        """
+        if self.is_admin:
+            return True
+            
+        scope = f"{resource}:{action}"
+        return self.has_scope(scope)

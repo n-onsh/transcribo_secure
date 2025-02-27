@@ -1,6 +1,7 @@
 """Database service."""
 
 import logging
+import asyncio
 import asyncpg
 from typing import Dict, Optional, List, Any, Type, TypeVar
 from uuid import UUID
@@ -163,13 +164,16 @@ class DatabaseService(BaseService):
     async def _create_pool(self):
         """Create database connection pool."""
         try:
-            # Create connection pool
+            # Create connection pool with optimized settings
             pool = await asyncpg.create_pool(
                 dsn=self.database_url,
                 min_size=self.min_connections,
                 max_size=self.max_connections,
-                command_timeout=60.0,
-                # Setup row factory to return dictionaries
+                command_timeout=60.0,  # Command execution timeout
+                timeout=30.0,  # Connection acquisition timeout
+                max_queries=50000,  # Max queries before connection reset
+                max_inactive_connection_lifetime=300.0,  # 5 minutes
+                setup=self._setup_connection,  # Connection setup function
                 init=lambda conn: conn.set_type_codec(
                     'json',
                     encoder=str,
@@ -201,77 +205,124 @@ class DatabaseService(BaseService):
                 details={"error": str(e)}
             )
 
+    async def _setup_connection(self, connection: asyncpg.Connection) -> None:
+        """Set up new database connections.
+        
+        Args:
+            connection: Database connection to set up
+        """
+        # Set session parameters
+        await connection.execute(
+            """
+            SET SESSION statement_timeout = '60s';  -- Query timeout
+            SET SESSION idle_in_transaction_session_timeout = '30s';  -- Transaction timeout
+            SET SESSION application_name = 'transcribo';  -- For monitoring
+            """
+        )
+
     async def _execute_query(self, query: str, params: Optional[Dict] = None) -> List[Dict]:
-        """Execute a single query."""
+        """Execute a single query with retries."""
         self._check_initialized()
-            
-        try:
-            async with self.pool.acquire() as connection:
-                # Convert dict params to list for asyncpg
-                param_values = []
-                if params:
-                    # Replace $name with $1, $2, etc. and build param list
-                    for i, (name, value) in enumerate(params.items(), 1):
-                        query = query.replace(f"${name}", f"${i}")
-                        param_values.append(value)
-                
-                # Execute query
-                result = await connection.fetch(query, *param_values)
-                
-                # Convert records to dicts
-                return [dict(record) for record in result]
-                
-        except asyncpg.PostgresError as e:
-            log_error(f"PostgreSQL error executing query: {str(e)}")
-            raise TranscriboError(
-                "Query execution failed",
-                details={"error": str(e)}
-            )
-        except Exception as e:
-            log_error(f"Unexpected error executing query: {str(e)}")
-            raise TranscriboError(
-                "Query execution failed",
-                details={"error": str(e)}
-            )
+        
+        max_retries = 3
+        retry_delay = 1.0  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                async with self.pool.acquire() as connection:
+                    # Convert dict params to list for asyncpg
+                    param_values = []
+                    if params:
+                        # Replace $name with $1, $2, etc. and build param list
+                        for i, (name, value) in enumerate(params.items(), 1):
+                            query = query.replace(f"${name}", f"${i}")
+                            param_values.append(value)
+                    
+                    # Execute query with statement timeout
+                    result = await connection.fetch(
+                        f"SELECT * FROM (" + query + f") q WHERE pg_try_advisory_xact_lock(hashtext(current_timestamp::text))",
+                        *param_values,
+                        timeout=60.0
+                    )
+                    
+                    # Convert records to dicts
+                    return [dict(record) for record in result]
+                    
+            except asyncpg.InterfaceError as e:
+                # Connection issues - retry
+                if attempt < max_retries - 1:
+                    log_warning(f"Database connection error (attempt {attempt + 1}): {str(e)}")
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    continue
+                raise
+            except asyncpg.PostgresError as e:
+                # Query issues - don't retry
+                raise TranscriboError(
+                    "Query execution failed",
+                    details={"error": str(e), "code": e.sqlstate}
+                )
+            except Exception as e:
+                log_error(f"Unexpected error executing query: {str(e)}")
+                raise TranscriboError(
+                    "Query execution failed",
+                    details={"error": str(e)}
+                )
 
     async def _execute_transaction(self, queries: List[Dict]) -> List[Dict]:
-        """Execute multiple queries in a transaction."""
+        """Execute multiple queries in a transaction with retries."""
         self._check_initialized()
-            
-        try:
-            async with self.pool.acquire() as connection:
-                async with connection.transaction():
-                    results = []
-                    
-                    for query_info in queries:
-                        query = query_info['query']
-                        params = query_info.get('params', {})
+        
+        max_retries = 3
+        retry_delay = 1.0  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                async with self.pool.acquire() as connection:
+                    # Start transaction with timeout
+                    async with connection.transaction(isolation='read_committed'):
+                        await connection.execute("SET LOCAL statement_timeout = '60s'")
+                        results = []
                         
-                        # Convert dict params to list
-                        param_values = []
-                        if params:
-                            for i, (name, value) in enumerate(params.items(), 1):
-                                query = query.replace(f"${name}", f"${i}")
-                                param_values.append(value)
+                        for query_info in queries:
+                            query = query_info['query']
+                            params = query_info.get('params', {})
+                            
+                            # Convert dict params to list
+                            param_values = []
+                            if params:
+                                for i, (name, value) in enumerate(params.items(), 1):
+                                    query = query.replace(f"${name}", f"${i}")
+                                    param_values.append(value)
+                            
+                            # Execute query with advisory lock
+                            result = await connection.fetch(
+                                f"SELECT * FROM (" + query + f") q WHERE pg_try_advisory_xact_lock(hashtext(current_timestamp::text))",
+                                *param_values,
+                                timeout=60.0
+                            )
+                            results.append([dict(record) for record in result])
                         
-                        # Execute query
-                        result = await connection.fetch(query, *param_values)
-                        results.append([dict(record) for record in result])
-                    
-                    return results
-                    
-        except asyncpg.PostgresError as e:
-            log_error(f"PostgreSQL error executing transaction: {str(e)}")
-            raise TranscriboError(
-                "Transaction failed",
-                details={"error": str(e)}
-            )
-        except Exception as e:
-            log_error(f"Unexpected error executing transaction: {str(e)}")
-            raise TranscriboError(
-                "Transaction failed",
-                details={"error": str(e)}
-            )
+                        return results
+                        
+            except asyncpg.InterfaceError as e:
+                # Connection issues - retry
+                if attempt < max_retries - 1:
+                    log_warning(f"Database transaction error (attempt {attempt + 1}): {str(e)}")
+                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    continue
+                raise
+            except asyncpg.PostgresError as e:
+                # Query issues - don't retry
+                raise TranscriboError(
+                    "Transaction failed",
+                    details={"error": str(e), "code": e.sqlstate}
+                )
+            except Exception as e:
+                log_error(f"Unexpected error executing transaction: {str(e)}")
+                raise TranscriboError(
+                    "Transaction failed",
+                    details={"error": str(e)}
+                )
 
     async def _get_pool_stats(self) -> Dict:
         """Get connection pool statistics."""

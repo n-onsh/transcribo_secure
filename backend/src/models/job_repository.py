@@ -1,296 +1,166 @@
-"""Job repository for database operations."""
+"""Job repository."""
 
+from typing import Dict, Any, List, Optional, cast
 from datetime import datetime
-from typing import Dict, Optional, List
-from ..utils.logging import log_info, log_error
-from ..utils.exceptions import TranscriboError
-from ..services.repository import BaseRepository
-from .job import Job, JobStatus, JobPriority
+from sqlalchemy import select, desc, asc, func, and_
+from uuid import UUID
+
+from .base import BaseRepository
+from .job import Job
+from ..utils.exceptions import ValidationError
+from ..types import ErrorContext
 
 class JobRepository(BaseRepository):
-    """Repository for job database operations."""
-
-    async def create_job(self, job_data: Dict) -> str:
-        """Create a job record in the database.
+    """Job repository."""
+    
+    async def create(self, job: Job) -> None:
+        """Create job.
         
         Args:
-            job_data: Job data including options
+            job: Job to create
+        """
+        async with self.session.begin():
+            self.session.add(job)
+            
+    async def get(self, job_id: UUID) -> Optional[Job]:
+        """Get job by ID.
+        
+        Args:
+            job_id: Job ID
             
         Returns:
-            Created job ID
-            
-        Raises:
-            TranscriboError: If creation fails
+            Job if found, None otherwise
         """
-        try:
-            # Start transaction
-            queries = []
+        query = select(Job).where(Job.id == job_id)
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+        
+    async def update(self, job: Job) -> None:
+        """Update job.
+        
+        Args:
+            job: Job to update
+        """
+        async with self.session.begin():
+            await self.session.merge(job)
             
-            # Insert job record
-            job_query = """
-            INSERT INTO jobs (
-                id, owner_id, file_name, file_size, status, priority,
-                is_zip, parent_job_id, metadata
-            ) VALUES (
-                $id, $owner_id, $file_name, $file_size, $status, $priority,
-                $is_zip, $parent_job_id, $metadata
-            )
-            """
-            
-            queries.append({
-                'query': job_query,
-                'params': {
-                    'id': job_data['job_id'],
-                    'owner_id': job_data['owner_id'],
-                    'file_name': job_data['file_name'],
-                    'file_size': job_data['file_size'],
-                    'status': job_data.get('status', JobStatus.PENDING),
-                    'priority': job_data.get('priority', JobPriority.NORMAL),
-                    'is_zip': job_data.get('is_zip', False),
-                    'parent_job_id': job_data.get('parent_job_id'),
-                    'metadata': job_data.get('metadata', {})
-                }
-            })
-            
-            # Insert job options
-            if 'options' in job_data:
-                options_query = """
-                INSERT INTO job_options (
-                    job_id, vocabulary, generate_srt, language
-                ) VALUES (
-                    $job_id, $vocabulary, $generate_srt, $language
-                )
-                """
+    async def delete(self, job_id: UUID) -> None:
+        """Delete job.
+        
+        Args:
+            job_id: Job ID to delete
+        """
+        async with self.session.begin():
+            job = await self.get(job_id)
+            if job:
+                await self.session.delete(job)
                 
-                options = job_data['options']
-                queries.append({
-                    'query': options_query,
-                    'params': {
-                        'job_id': job_data['job_id'],
-                        'vocabulary': options.get('vocabulary', []),
-                        'generate_srt': options.get('generate_srt', True),
-                        'language': options.get('language', 'de')
+    async def count(self, filters: Dict[str, Any]) -> int:
+        """Count jobs matching filters.
+        
+        Args:
+            filters: Filters to apply
+            
+        Returns:
+            Number of matching jobs
+        """
+        query = select(func.count()).select_from(Job)
+        
+        # Apply filters
+        if filters.get("user_id"):
+            query = query.where(Job.owner_id == filters["user_id"])
+        if filters.get("language"):
+            query = query.where(Job.options["language"].astext == filters["language"])
+            
+        result = await self.session.execute(query)
+        return cast(int, result.scalar())
+        
+    async def find_with_cursor(
+        self,
+        cursor_data: Optional[Dict[str, Any]],
+        limit: int,
+        sort_field: str,
+        sort_direction: str,
+        filters: Dict[str, Any]
+    ) -> List[Job]:
+        """Find jobs with cursor-based pagination.
+        
+        Args:
+            cursor_data: Optional cursor data
+            limit: Maximum number of jobs to return
+            sort_field: Field to sort by
+            sort_direction: Sort direction (asc/desc)
+            filters: Filters to apply
+            
+        Returns:
+            List of jobs
+            
+        Raises:
+            ValidationError: If parameters invalid
+        """
+        try:
+            # Build base query
+            query = select(Job)
+            
+            # Apply filters
+            if filters.get("user_id"):
+                query = query.where(Job.owner_id == filters["user_id"])
+            if filters.get("language"):
+                query = query.where(Job.options["language"].astext == filters["language"])
+                
+            # Apply cursor conditions
+            if cursor_data:
+                last_id = UUID(cursor_data["last_id"])
+                last_value = cursor_data["last_value"]
+                
+                # Get sort column
+                sort_col = getattr(Job, sort_field)
+                if not sort_col:
+                    raise ValidationError(f"Invalid sort field: {sort_field}")
+                    
+                # Add cursor conditions
+                if sort_direction.lower() == "desc":
+                    query = query.where(
+                        and_(
+                            sort_col < last_value,
+                            Job.id != last_id
+                        )
+                    )
+                else:
+                    query = query.where(
+                        and_(
+                            sort_col > last_value,
+                            Job.id != last_id
+                        )
+                    )
+                    
+            # Apply sorting
+            sort_col = getattr(Job, sort_field)
+            if sort_direction.lower() == "desc":
+                query = query.order_by(desc(sort_col), desc(Job.id))
+            else:
+                query = query.order_by(asc(sort_col), asc(Job.id))
+                
+            # Apply limit
+            query = query.limit(limit)
+            
+            # Execute query
+            result = await self.session.execute(query)
+            return list(result.scalars().all())
+            
+        except ValidationError:
+            raise
+        except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "find_jobs",
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "filters": filters,
+                    "sort": {
+                        "field": sort_field,
+                        "direction": sort_direction
                     }
-                })
-            
-            # Execute transaction
-            await self.session.execute_transaction(queries)
-            
-            return job_data['job_id']
-            
-        except Exception as e:
-            log_error(f"Failed to create job record: {str(e)}")
-            raise TranscriboError(
-                "Failed to create job record",
-                details={"error": str(e)}
-            )
-
-    async def update_status(self, job_id: str, status: str, metadata: Optional[Dict] = None):
-        """Update job status.
-        
-        Args:
-            job_id: Job ID
-            status: New status
-            metadata: Optional metadata to update
-            
-        Raises:
-            TranscriboError: If update fails
-        """
-        try:
-            query = """
-            UPDATE jobs
-            SET status = $status,
-                updated_at = CURRENT_TIMESTAMP,
-                metadata = COALESCE(metadata, '{}'::jsonb) || $metadata::jsonb
-            WHERE id = $id
-            """
-            
-            await self.session.execute_query(
-                query,
-                {
-                    'id': job_id,
-                    'status': status,
-                    'metadata': metadata or {}
                 }
-            )
-            
-        except Exception as e:
-            log_error(f"Failed to update job status: {str(e)}")
-            raise TranscriboError(
-                "Failed to update job status",
-                details={"job_id": job_id, "error": str(e)}
-            )
-
-    async def update_error(self, job_id: str, error: str) -> Tuple[int, int]:
-        """Update job error and retry information.
-        
-        Args:
-            job_id: Job ID
-            error: Error message
-            
-        Returns:
-            Tuple of (retry_count, max_retries)
-            
-        Raises:
-            TranscriboError: If update fails
-        """
-        try:
-            query = """
-            UPDATE jobs
-            SET error = $error,
-                status = $status,
-                retry_count = retry_count + 1,
-                next_retry_at = CASE
-                    WHEN retry_count < max_retries THEN
-                        CURRENT_TIMESTAMP + (INTERVAL '1 minute' * POWER(2, retry_count))
-                    ELSE NULL
-                END,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $id
-            RETURNING retry_count, max_retries
-            """
-            
-            result = await self.session.execute_query(
-                query,
-                {
-                    'id': job_id,
-                    'error': error,
-                    'status': JobStatus.FAILED
-                }
-            )
-            
-            if result and len(result) > 0:
-                return (result[0]['retry_count'], result[0]['max_retries'])
-            return (0, 0)
-            
-        except Exception as e:
-            log_error(f"Failed to update job error: {str(e)}")
-            raise TranscriboError(
-                "Failed to update job error",
-                details={"job_id": job_id, "error": str(e)}
-            )
-
-    async def get_details(self, job_id: str) -> Optional[Dict]:
-        """Get job details.
-        
-        Args:
-            job_id: Job ID
-            
-        Returns:
-            Job details if found, None otherwise
-            
-        Raises:
-            TranscriboError: If query fails
-        """
-        try:
-            query = """
-            SELECT j.*, jo.vocabulary, jo.generate_srt, jo.language
-            FROM jobs j
-            LEFT JOIN job_options jo ON j.id = jo.job_id
-            WHERE j.id = $id
-            """
-            
-            results = await self.session.execute_query(query, {'id': job_id})
-            
-            if results and len(results) > 0:
-                job = results[0]
-                return {
-                    'id': job['id'],
-                    'owner_id': job['owner_id'],
-                    'file_name': job['file_name'],
-                    'file_size': job['file_size'],
-                    'status': job['status'],
-                    'progress': job['progress'],
-                    'error': job['error'],
-                    'is_zip': job['is_zip'],
-                    'zip_progress': job['zip_progress'],
-                    'sub_jobs': job['sub_jobs'],
-                    'parent_job_id': job['parent_job_id'],
-                    'options': {
-                        'vocabulary': job['vocabulary'] or [],
-                        'generate_srt': job['generate_srt'],
-                        'language': job['language']
-                    } if job['language'] is not None else None,
-                    'created_at': job['created_at'],
-                    'updated_at': job['updated_at']
-                }
-            
-            return None
-            
-        except Exception as e:
-            log_error(f"Failed to get job details: {str(e)}")
-            raise TranscriboError(
-                "Failed to get job details",
-                details={"job_id": job_id, "error": str(e)}
-            )
-
-    async def list_filtered(self, filters: Optional[Dict] = None) -> List[Dict]:
-        """Get filtered jobs.
-        
-        Args:
-            filters: Optional filter parameters
-            
-        Returns:
-            List of job details
-            
-        Raises:
-            TranscriboError: If query fails
-        """
-        try:
-            query = """
-            SELECT j.*, jo.vocabulary, jo.generate_srt, jo.language
-            FROM jobs j
-            LEFT JOIN job_options jo ON j.id = jo.job_id
-            WHERE 1=1
-            """
-            
-            params = {}
-            
-            if filters:
-                if 'owner_id' in filters:
-                    query += " AND j.owner_id = $owner_id"
-                    params['owner_id'] = filters['owner_id']
-                    
-                if 'status' in filters:
-                    query += " AND j.status = $status"
-                    params['status'] = filters['status']
-                    
-                if 'is_zip' in filters:
-                    query += " AND j.is_zip = $is_zip"
-                    params['is_zip'] = filters['is_zip']
-                    
-                if 'parent_job_id' in filters:
-                    query += " AND j.parent_job_id = $parent_job_id"
-                    params['parent_job_id'] = filters['parent_job_id']
-            
-            query += " ORDER BY j.priority DESC, j.created_at ASC"
-            
-            results = await self.session.execute_query(query, params)
-            
-            return [{
-                'id': job['id'],
-                'owner_id': job['owner_id'],
-                'file_name': job['file_name'],
-                'file_size': job['file_size'],
-                'status': job['status'],
-                'progress': job['progress'],
-                'error': job['error'],
-                'is_zip': job['is_zip'],
-                'zip_progress': job['zip_progress'],
-                'sub_jobs': job['sub_jobs'],
-                'parent_job_id': job['parent_job_id'],
-                'options': {
-                    'vocabulary': job['vocabulary'] or [],
-                    'generate_srt': job['generate_srt'],
-                    'language': job['language']
-                } if job['language'] is not None else None,
-                'created_at': job['created_at'],
-                'updated_at': job['updated_at']
-            } for job in results]
-            
-        except Exception as e:
-            log_error(f"Failed to get filtered jobs: {str(e)}")
-            raise TranscriboError(
-                "Failed to get filtered jobs",
-                details={"error": str(e)}
-            )
+            }
+            raise ValidationError("Failed to find jobs", details=error_context)

@@ -1,61 +1,61 @@
-"""Encryption service."""
+"""File encryption service."""
 
-import logging
 import os
-import secrets
-from typing import Dict, Optional, Any, TypedDict, cast
+import io
+from uuid import UUID
 from datetime import datetime
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.exceptions import InvalidKey
+from typing import Dict, Optional, Any, BinaryIO, Tuple
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.backends import default_backend
 from ..utils.logging import log_info, log_error, log_warning
-from ..utils.exceptions import EncryptionError, TranscriboError
-from ..types import ServiceConfig, ErrorContext, JSONValue
-from .base import BaseService
 from ..utils.metrics import (
-    ENCRYPTION_OPERATIONS,
-    ENCRYPTION_ERRORS,
-    ENCRYPTION_LATENCY,
     track_encryption_operation,
     track_encryption_error,
-    track_encryption_latency
+    track_encryption_latency,
+    track_encryption_file_size
 )
-
-class EncryptionMetadata(TypedDict):
-    """Type definition for encryption metadata."""
-    algorithm: str
-    nonce: bytes
-    version: str
-
-class EncryptionResult(TypedDict):
-    """Type definition for encryption result."""
-    encrypted_data: bytes
-    metadata: EncryptionMetadata
+from ..types import ErrorContext
+from ..utils.exceptions import EncryptionError
+from .base import BaseService
+from .file_key_service import FileKeyService
+from ..config import config
 
 class EncryptionService(BaseService):
-    """Service for handling file encryption and decryption."""
+    """Service for file encryption operations."""
 
-    def __init__(self, settings: ServiceConfig) -> None:
-        """Initialize encryption service.
+    def __init__(self, settings: Dict[str, Any]):
+        """Initialize service.
         
         Args:
-            settings: Service configuration
+            settings: Service settings
         """
         super().__init__(settings)
-        self.algorithm: str = 'AES-256-GCM'
-        self.key_size: int = 256
-        self.chunk_size: int = 8192
+        self.config = config.storage.encryption
+        self.key_service: Optional[FileKeyService] = None
+        self.chunk_size = self.config.chunk_size_mb * 1024 * 1024  # Convert MB to bytes
 
     async def _initialize_impl(self) -> None:
         """Initialize service implementation."""
         try:
-            # Initialize encryption settings
-            self.algorithm = self.settings.get('encryption_algorithm', 'AES-256-GCM')
-            self.key_size = int(self.settings.get('encryption_key_size', 256))
-            self.chunk_size = int(self.settings.get('encryption_chunk_size', 8192))
+            if not self.config.enabled:
+                log_info("Encryption disabled")
+                return
 
-            log_info("Encryption service initialized")
+            # Get key service
+            from .provider import service_provider
+            self.key_service = service_provider.get(FileKeyService)
+            if not self.key_service:
+                raise EncryptionError("File key service not available")
+
+            # Initialize key service if needed
+            if not self.key_service.initialized:
+                await self.key_service.initialize()
+
+            log_info("Encryption service initialized", {
+                "chunk_size": f"{self.config.chunk_size_mb}MB",
+                "algorithm": self.config.algorithm
+            })
 
         except Exception as e:
             error_context: ErrorContext = {
@@ -64,365 +64,266 @@ class EncryptionService(BaseService):
                 "details": {"error": str(e)}
             }
             log_error(f"Failed to initialize encryption service: {str(e)}")
-            raise TranscriboError(
+            raise EncryptionError(
                 "Failed to initialize encryption service",
                 details=error_context
             )
 
-    async def _cleanup_impl(self) -> None:
-        """Clean up service implementation."""
-        try:
-            log_info("Encryption service cleaned up")
-
-        except Exception as e:
-            error_context: ErrorContext = {
-                "operation": "cleanup_encryption",
-                "timestamp": datetime.utcnow(),
-                "details": {"error": str(e)}
-            }
-            log_error(f"Error during encryption service cleanup: {str(e)}")
-            raise TranscriboError(
-                "Failed to clean up encryption service",
-                details=error_context
-            )
-
-    async def encrypt_file(self, file_data: bytes, key: bytes) -> EncryptionResult:
-        """Encrypt file data.
+    async def encrypt_file(
+        self,
+        file_id: UUID,
+        input_file: BinaryIO,
+        output_file: BinaryIO
+    ) -> None:
+        """Encrypt a file using authenticated encryption.
         
         Args:
-            file_data: Raw file data to encrypt
-            key: Encryption key
-            
-        Returns:
-            Dictionary containing encrypted data and metadata
+            file_id: File ID for key lookup
+            input_file: Input file object
+            output_file: Output file object
             
         Raises:
             EncryptionError: If encryption fails
         """
-        start_time = logging.time()
+        self._check_initialized()
+        start_time = datetime.utcnow()
+
         try:
-            self._check_initialized()
-
             # Track operation
-            ENCRYPTION_OPERATIONS.labels(operation='encrypt').inc()
-            track_encryption_operation('encrypt')
+            track_encryption_operation('encrypt_file')
 
-            # Encrypt data
-            result = await self._encrypt_data(file_data, key)
+            # Generate IV
+            iv = os.urandom(12)  # 96 bits for GCM
+
+            # Get encryption key
+            key = await self.key_service.get_key(file_id)
+            if not key:
+                key = await self.key_service.generate_key(file_id)
+
+            # Create cipher
+            cipher = Cipher(
+                algorithms.AES(key),
+                modes.GCM(iv),  # Use GCM for authenticated encryption
+                backend=default_backend()
+            )
+            encryptor = cipher.encryptor()
+
+            # Write IV
+            output_file.write(iv)
+
+            # Encrypt in chunks
+            file_size = 0
+            while True:
+                chunk = input_file.read(self.chunk_size)
+                if not chunk:
+                    break
+
+                file_size += len(chunk)
+
+                # Encrypt chunk
+                encrypted_chunk = encryptor.update(chunk)
+                output_file.write(encrypted_chunk)
+
+            # Write final block and authentication tag
+            final_chunk = encryptor.finalize()
+            if final_chunk:
+                output_file.write(final_chunk)
             
-            # Track latency
-            duration = logging.time() - start_time
-            ENCRYPTION_LATENCY.observe(duration)
-            track_encryption_latency(duration)
-            
-            log_info(f"Encrypted {len(file_data)} bytes")
-            return result
+            # Write authentication tag
+            output_file.write(encryptor.tag)
+
+            # Track file size
+            track_encryption_file_size(file_size)
+
+            log_info(f"Encrypted file {file_id}", {
+                "size": file_size,
+                "chunks": (file_size + self.chunk_size - 1) // self.chunk_size
+            })
 
         except Exception as e:
-            ENCRYPTION_ERRORS.inc()
-            track_encryption_error()
+            # Track error
+            track_encryption_error('encrypt_file')
+
             error_context: ErrorContext = {
                 "operation": "encrypt_file",
                 "timestamp": datetime.utcnow(),
                 "details": {
                     "error": str(e),
-                    "data_size": len(file_data)
+                    "file_id": str(file_id)
                 }
             }
-            log_error(f"Error encrypting file: {str(e)}")
-            raise EncryptionError("Failed to encrypt file", details=error_context)
+            log_error(f"Failed to encrypt file {file_id}: {str(e)}")
+            raise EncryptionError(
+                f"Failed to encrypt file: {str(e)}",
+                details=error_context
+            )
+
+        finally:
+            # Track latency
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            track_encryption_latency(duration, 'encrypt_file')
 
     async def decrypt_file(
         self,
-        encrypted_data: bytes,
-        key: bytes,
-        metadata: EncryptionMetadata
-    ) -> bytes:
-        """Decrypt file data.
+        file_id: UUID,
+        input_file: BinaryIO,
+        output_file: BinaryIO
+    ) -> None:
+        """Decrypt a file using authenticated encryption.
         
         Args:
-            encrypted_data: Encrypted file data
-            key: Decryption key
-            metadata: Encryption metadata
-            
-        Returns:
-            Decrypted file data
+            file_id: File ID for key lookup
+            input_file: Input file object
+            output_file: Output file object
             
         Raises:
             EncryptionError: If decryption fails
         """
-        start_time = logging.time()
+        self._check_initialized()
+        start_time = datetime.utcnow()
+
         try:
-            self._check_initialized()
-
             # Track operation
-            ENCRYPTION_OPERATIONS.labels(operation='decrypt').inc()
-            track_encryption_operation('decrypt')
+            track_encryption_operation('decrypt_file')
 
-            # Decrypt data
-            decrypted_data = await self._decrypt_data(encrypted_data, key, metadata)
-            
-            # Track latency
-            duration = logging.time() - start_time
-            ENCRYPTION_LATENCY.observe(duration)
-            track_encryption_latency(duration)
-            
-            log_info(f"Decrypted {len(encrypted_data)} bytes")
-            return decrypted_data
+            # Read IV
+            iv = input_file.read(12)  # 96 bits for GCM
+            if len(iv) != 12:
+                raise EncryptionError("Invalid encrypted file format")
+
+            # Get decryption key
+            key = await self.key_service.get_key(file_id)
+            if not key:
+                raise EncryptionError(f"No key found for file {file_id}")
+
+            # Create cipher
+            cipher = Cipher(
+                algorithms.AES(key),
+                modes.GCM(iv),
+                backend=default_backend()
+            )
+            decryptor = cipher.decryptor()
+
+            # Read file into memory to get tag
+            data = input_file.read()
+            if len(data) < 16:  # At least 16 bytes for tag
+                raise EncryptionError("Invalid encrypted file format")
+
+            # Split data and tag
+            ciphertext = data[:-16]
+            tag = data[-16:]
+
+            # Set tag
+            decryptor.authenticate_additional_data(b"")
+
+            # Decrypt in chunks
+            file_size = len(ciphertext)
+            pos = 0
+            while pos < file_size:
+                chunk = ciphertext[pos:pos + self.chunk_size]
+                decrypted_chunk = decryptor.update(chunk)
+                output_file.write(decrypted_chunk)
+                pos += len(chunk)
+
+            # Verify tag and finalize
+            decryptor.authenticate_additional_data(b"")
+            decryptor.tag = tag
+            final_chunk = decryptor.finalize()
+            if final_chunk:
+                output_file.write(final_chunk)
+
+            # Track file size
+            track_encryption_file_size(file_size)
+
+            log_info(f"Decrypted file {file_id}", {
+                "size": file_size,
+                "chunks": (file_size + self.chunk_size - 1) // self.chunk_size
+            })
 
         except Exception as e:
-            ENCRYPTION_ERRORS.inc()
-            track_encryption_error()
+            # Track error
+            track_encryption_error('decrypt_file')
+
             error_context: ErrorContext = {
                 "operation": "decrypt_file",
                 "timestamp": datetime.utcnow(),
                 "details": {
                     "error": str(e),
-                    "data_size": len(encrypted_data)
+                    "file_id": str(file_id)
                 }
             }
-            log_error(f"Error decrypting file: {str(e)}")
-            raise EncryptionError("Failed to decrypt file", details=error_context)
-
-    async def generate_key(self) -> bytes:
-        """Generate a new encryption key.
-        
-        Returns:
-            Generated encryption key
-            
-        Raises:
-            EncryptionError: If key generation fails
-        """
-        try:
-            self._check_initialized()
-
-            # Track operation
-            ENCRYPTION_OPERATIONS.labels(operation='generate_key').inc()
-            track_encryption_operation('generate_key')
-
-            # Generate key
-            key = await self._generate_key()
-            log_info("Generated new encryption key")
-            return key
-
-        except Exception as e:
-            ENCRYPTION_ERRORS.inc()
-            track_encryption_error()
-            error_context: ErrorContext = {
-                "operation": "generate_key",
-                "timestamp": datetime.utcnow(),
-                "details": {"error": str(e)}
-            }
-            log_error(f"Error generating encryption key: {str(e)}")
-            raise EncryptionError("Failed to generate key", details=error_context)
-
-    async def validate_key(self, key: bytes) -> bool:
-        """Validate an encryption key.
-        
-        Args:
-            key: Encryption key to validate
-            
-        Returns:
-            True if key is valid, False otherwise
-            
-        Raises:
-            EncryptionError: If validation fails
-        """
-        try:
-            self._check_initialized()
-
-            # Track operation
-            ENCRYPTION_OPERATIONS.labels(operation='validate_key').inc()
-            track_encryption_operation('validate_key')
-
-            # Validate key
-            is_valid = await self._validate_key(key)
-            
-            if is_valid:
-                log_info("Validated encryption key")
-            else:
-                log_warning("Invalid encryption key")
-            
-            return is_valid
-
-        except Exception as e:
-            ENCRYPTION_ERRORS.inc()
-            track_encryption_error()
-            error_context: ErrorContext = {
-                "operation": "validate_key",
-                "timestamp": datetime.utcnow(),
-                "details": {
-                    "error": str(e),
-                    "key_length": len(key)
-                }
-            }
-            log_error(f"Error validating encryption key: {str(e)}")
-            raise EncryptionError("Failed to validate key", details=error_context)
-
-    async def _encrypt_data(self, data: bytes, key: bytes) -> EncryptionResult:
-        """Encrypt data with key using AES-GCM.
-        
-        Args:
-            data: Data to encrypt
-            key: Encryption key
-            
-        Returns:
-            Dictionary containing encrypted data and metadata
-            
-        Raises:
-            EncryptionError: If encryption fails
-        """
-        try:
-            # Generate a random 96-bit nonce
-            nonce = os.urandom(12)
-            
-            # Create AESGCM cipher
-            cipher = AESGCM(key)
-            
-            # Encrypt data with authenticated encryption
-            encrypted_data = cipher.encrypt(nonce, data, None)
-            
-            return {
-                'encrypted_data': encrypted_data,
-                'metadata': {
-                    'algorithm': 'AES-GCM',
-                    'nonce': nonce,
-                    'version': '1.0'
-                }
-            }
-        except Exception as e:
-            error_context: ErrorContext = {
-                "operation": "encrypt_data",
-                "timestamp": datetime.utcnow(),
-                "details": {
-                    "error": str(e),
-                    "error_type": type(e).__name__
-                }
-            }
-            log_error(f"Encryption error: {type(e).__name__}")
-            raise EncryptionError("Failed to encrypt data", details=error_context)
-
-    async def _decrypt_data(
-        self,
-        encrypted_data: bytes,
-        key: bytes,
-        metadata: EncryptionMetadata
-    ) -> bytes:
-        """Decrypt data with key using AES-GCM.
-        
-        Args:
-            encrypted_data: Data to decrypt
-            key: Decryption key
-            metadata: Encryption metadata
-            
-        Returns:
-            Decrypted data
-            
-        Raises:
-            EncryptionError: If decryption fails
-        """
-        try:
-            # Validate metadata
-            if not metadata or 'nonce' not in metadata:
-                raise ValueError("Invalid metadata: missing nonce")
-            
-            # Create AESGCM cipher
-            cipher = AESGCM(key)
-            
-            # Decrypt data with authenticated decryption
-            decrypted_data = cipher.decrypt(metadata['nonce'], encrypted_data, None)
-            
-            return decrypted_data
-        except InvalidKey:
-            error_context: ErrorContext = {
-                "operation": "decrypt_data",
-                "timestamp": datetime.utcnow(),
-                "details": {"error": "Invalid encryption key"}
-            }
-            log_error("Invalid encryption key")
-            raise EncryptionError("Invalid encryption key", details=error_context)
-        except Exception as e:
-            error_context: ErrorContext = {
-                "operation": "decrypt_data",
-                "timestamp": datetime.utcnow(),
-                "details": {
-                    "error": str(e),
-                    "error_type": type(e).__name__
-                }
-            }
-            log_error(f"Decryption error: {type(e).__name__}")
-            raise EncryptionError("Failed to decrypt data", details=error_context)
-
-    async def _generate_key(self) -> bytes:
-        """Generate a secure encryption key using PBKDF2.
-        
-        Returns:
-            Generated encryption key
-            
-        Raises:
-            EncryptionError: If key generation fails
-        """
-        try:
-            # Generate a random salt
-            salt = os.urandom(16)
-            
-            # Generate a random password
-            password = secrets.token_bytes(32)
-            
-            # Use PBKDF2 to derive a key
-            kdf = PBKDF2HMAC(
-                algorithm=hashes.SHA256(),
-                length=32,  # 256-bit key
-                salt=salt,
-                iterations=100000,
+            log_error(f"Failed to decrypt file {file_id}: {str(e)}")
+            raise EncryptionError(
+                f"Failed to decrypt file: {str(e)}",
+                details=error_context
             )
+
+        finally:
+            # Track latency
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            track_encryption_latency(duration, 'decrypt_file')
+
+    async def rotate_file_key(
+        self,
+        file_id: UUID,
+        input_file: BinaryIO,
+        output_file: BinaryIO
+    ) -> None:
+        """Rotate encryption key for a file.
+        
+        This re-encrypts the file with a new key.
+        
+        Args:
+            file_id: File ID to rotate key for
+            input_file: Input file object
+            output_file: Output file object
             
-            # Derive the key
-            key = kdf.derive(password)
-            
-            return key
+        Raises:
+            EncryptionError: If key rotation fails
+        """
+        self._check_initialized()
+        start_time = datetime.utcnow()
+
+        try:
+            # Track operation
+            track_encryption_operation('rotate_key')
+
+            # Create temporary buffer
+            temp_buffer = io.BytesIO()
+
+            # Decrypt with old key
+            await self.decrypt_file(file_id, input_file, temp_buffer)
+
+            # Rotate key
+            await self.key_service.rotate_key(file_id)
+
+            # Reset buffer for reading
+            temp_buffer.seek(0)
+
+            # Encrypt with new key
+            await self.encrypt_file(file_id, temp_buffer, output_file)
+
+            log_info(f"Rotated key for file {file_id}")
+
         except Exception as e:
+            # Track error
+            track_encryption_error('rotate_key')
+
             error_context: ErrorContext = {
-                "operation": "generate_key",
+                "operation": "rotate_key",
                 "timestamp": datetime.utcnow(),
                 "details": {
                     "error": str(e),
-                    "error_type": type(e).__name__
+                    "file_id": str(file_id)
                 }
             }
-            log_error(f"Key generation error: {type(e).__name__}")
-            raise EncryptionError("Failed to generate encryption key", details=error_context)
+            log_error(f"Failed to rotate key for file {file_id}: {str(e)}")
+            raise EncryptionError(
+                f"Failed to rotate key: {str(e)}",
+                details=error_context
+            )
 
-    async def _validate_key(self, key: bytes) -> bool:
-        """Validate encryption key.
-        
-        Args:
-            key: Key to validate
-            
-        Returns:
-            True if key is valid, False otherwise
-        """
-        try:
-            # Check key length
-            if len(key) != 32:  # 256 bits
-                log_warning(f"Invalid key length: {len(key)} bytes")
-                return False
-            
-            # Test key with a sample encryption
-            test_data = b"test"
-            nonce = os.urandom(12)
-            cipher = AESGCM(key)
-            
-            try:
-                # Try to encrypt and decrypt test data
-                encrypted = cipher.encrypt(nonce, test_data, None)
-                decrypted = cipher.decrypt(nonce, encrypted, None)
-                
-                # Verify decryption was successful
-                return decrypted == test_data
-            except Exception:
-                return False
-                
-        except Exception as e:
-            log_error(f"Key validation error: {type(e).__name__}")
-            return False
+        finally:
+            # Track latency
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            track_encryption_latency(duration, 'rotate_key')

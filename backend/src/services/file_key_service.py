@@ -1,184 +1,404 @@
-"""File key service."""
+"""File key management service."""
 
-import logging
-from typing import Dict, Optional, List
+import os
+import base64
 from uuid import UUID
+from datetime import datetime, timedelta
+from typing import Dict, Optional, Any, List
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 from ..utils.logging import log_info, log_error, log_warning
 from ..utils.metrics import (
-    KEY_OPERATIONS,
-    KEY_ERRORS,
-    KEY_CACHE_HITS,
-    KEY_CACHE_MISSES,
-    track_key_operation,
-    track_key_error,
-    track_cache_hit,
-    track_cache_miss
+    track_encryption_operation,
+    track_encryption_error,
+    track_encryption_latency,
+    track_encryption_file_size
 )
+from ..types import ErrorContext
+from ..utils.exceptions import KeyManagementError
+from .base import BaseService
+from .keyvault import KeyVaultService
+from .database import DatabaseService
+from ..config import config
 
-class FileKeyService:
+class FileKeyService(BaseService):
     """Service for managing file encryption keys."""
 
-    def __init__(self, settings):
-        """Initialize file key service."""
-        self.settings = settings
-        self.initialized = False
+    def __init__(self, settings: Dict[str, Any]):
+        """Initialize service.
+        
+        Args:
+            settings: Service settings
+        """
+        super().__init__(settings)
+        self.config = config.storage.encryption
+        self.key_vault: Optional[KeyVaultService] = None
+        self.db: Optional[DatabaseService] = None
+        self.key_rotation_interval = timedelta(days=self.config.key_rotation_days)
+        self.min_key_length = 32  # 256 bits
 
-    async def initialize(self):
-        """Initialize the service."""
-        if self.initialized:
-            return
-
+    async def _initialize_impl(self) -> None:
+        """Initialize service implementation."""
         try:
-            # Initialize key service settings
-            self.cache_enabled = bool(self.settings.get('key_cache_enabled', True))
-            self.cache_ttl = int(self.settings.get('key_cache_ttl', 3600))
-            self.max_keys = int(self.settings.get('max_file_keys', 1000))
+            if not self.config.enabled:
+                log_info("Encryption disabled")
+                return
 
-            self.initialized = True
-            log_info("File key service initialized")
+            # Get Key Vault service
+            from .provider import service_provider
+            self.key_vault = service_provider.get(KeyVaultService)
+            if not self.key_vault:
+                raise KeyManagementError("Key Vault service not available")
+
+            # Get database service
+            self.db = service_provider.get(DatabaseService)
+            if not self.db:
+                raise KeyManagementError("Database service not available")
+
+            # Initialize services if needed
+            if not self.key_vault.initialized:
+                await self.key_vault.initialize()
+            if not self.db.initialized:
+                await self.db.initialize()
+
+            # Ensure database table exists
+            await self.db.execute("""
+                CREATE TABLE IF NOT EXISTS file_keys (
+                    id SERIAL PRIMARY KEY,
+                    file_id UUID NOT NULL,
+                    key_reference TEXT NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    expires_at TIMESTAMP WITH TIME ZONE,
+                    UNIQUE(file_id, key_reference)
+                )
+            """)
+
+            # Create index on file_id
+            await self.db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_file_keys_file_id 
+                ON file_keys(file_id)
+            """)
+
+            log_info("File key service initialized", {
+                "rotation_interval": f"{self.config.key_rotation_days} days",
+                "min_key_length": self.min_key_length,
+                "algorithm": self.config.algorithm
+            })
 
         except Exception as e:
+            error_context: ErrorContext = {
+                "operation": "initialize_file_key_service",
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
             log_error(f"Failed to initialize file key service: {str(e)}")
-            raise
+            raise KeyManagementError(
+                "Failed to initialize file key service",
+                details=error_context
+            )
 
-    async def cleanup(self):
-        """Clean up the service."""
-        try:
-            self.initialized = False
-            log_info("File key service cleaned up")
+    async def generate_key(self, file_id: UUID) -> bytes:
+        """Generate a new encryption key for a file.
+        
+        Args:
+            file_id: File ID to generate key for
+            
+        Returns:
+            Generated key
+            
+        Raises:
+            KeyManagementError: If key generation fails
+        """
+        self._check_initialized()
+        start_time = datetime.utcnow()
 
-        except Exception as e:
-            log_error(f"Error during file key service cleanup: {str(e)}")
-            raise
-
-    async def create_key(self, file_id: UUID) -> str:
-        """Create a new file key."""
         try:
             # Track operation
-            KEY_OPERATIONS.labels(operation='create').inc()
-            track_key_operation('create')
+            track_encryption_operation('generate_key')
 
-            # Create key
-            key = await self._generate_key(file_id)
-            log_info(f"Created key for file {file_id}")
+            # Generate secure random key
+            key = os.urandom(self.min_key_length)
+
+            # Store in Key Vault
+            key_name = f"file-{str(file_id)}"
+            key_b64 = base64.b64encode(key).decode()
+            
+            await self.key_vault.set_secret(
+                name=key_name,
+                value=key_b64,
+                content_type="application/octet-stream",
+                expires_on=datetime.utcnow() + self.key_rotation_interval
+            )
+
+            # Store key metadata in database
+            async with self.db.transaction():
+                await self.db.execute(
+                    """
+                    INSERT INTO file_keys (
+                        file_id,
+                        key_reference,
+                        created_at,
+                        expires_at
+                    ) VALUES ($1, $2, $3, $4)
+                    """,
+                    str(file_id),
+                    key_name,
+                    datetime.utcnow(),
+                    datetime.utcnow() + self.key_rotation_interval
+                )
+
+            log_info(f"Generated key for file {file_id}")
             return key
 
         except Exception as e:
-            KEY_ERRORS.inc()
-            track_key_error()
-            log_error(f"Error creating key for file {file_id}: {str(e)}")
-            raise
+            # Track error
+            track_encryption_error('generate_key')
 
-    async def get_key(self, file_id: UUID) -> Optional[str]:
-        """Get a file key."""
-        try:
-            # Check cache first
-            if self.cache_enabled:
-                key = await self._get_from_cache(file_id)
-                if key:
-                    KEY_CACHE_HITS.inc()
-                    track_cache_hit()
-                    log_info(f"Cache hit for file {file_id} key")
-                    return key
-                
-                KEY_CACHE_MISSES.inc()
-                track_cache_miss()
-                log_info(f"Cache miss for file {file_id} key")
+            error_context: ErrorContext = {
+                "operation": "generate_key",
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            }
+            log_error(f"Failed to generate key for file {file_id}: {str(e)}")
+            raise KeyManagementError(
+                f"Failed to generate key: {str(e)}",
+                details=error_context
+            )
 
-            # Track operation
-            KEY_OPERATIONS.labels(operation='get').inc()
-            track_key_operation('get')
+        finally:
+            # Track latency
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            track_encryption_latency(duration, 'generate_key')
 
-            # Get key from storage
-            key = await self._get_key(file_id)
+    async def get_key(self, file_id: UUID) -> Optional[bytes]:
+        """Get encryption key for a file.
+        
+        Args:
+            file_id: File ID to get key for
             
-            if key:
-                if self.cache_enabled:
-                    await self._add_to_cache(file_id, key)
-                log_info(f"Retrieved key for file {file_id}")
-                return key
+        Returns:
+            Encryption key if found, None otherwise
             
-            log_warning(f"Key not found for file {file_id}")
-            return None
+        Raises:
+            KeyManagementError: If key retrieval fails
+        """
+        self._check_initialized()
+        start_time = datetime.utcnow()
 
-        except Exception as e:
-            KEY_ERRORS.inc()
-            track_key_error()
-            log_error(f"Error getting key for file {file_id}: {str(e)}")
-            raise
-
-    async def delete_key(self, file_id: UUID):
-        """Delete a file key."""
         try:
             # Track operation
-            KEY_OPERATIONS.labels(operation='delete').inc()
-            track_key_operation('delete')
+            track_encryption_operation('get_key')
 
-            # Delete key
-            deleted = await self._delete_key(file_id)
-            
-            if deleted:
-                if self.cache_enabled:
-                    await self._remove_from_cache(file_id)
-                log_info(f"Deleted key for file {file_id}")
-            else:
-                log_warning(f"Key not found for file {file_id}")
+            # Get key reference from database
+            result = await self.db.fetch_one(
+                """
+                SELECT key_reference
+                FROM file_keys
+                WHERE file_id = $1
+                AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                str(file_id)
+            )
+
+            if not result:
+                return None
+
+            key_name = result['key_reference']
+
+            # Get key from Key Vault
+            key_b64 = await self.key_vault.get_secret(key_name)
+            if not key_b64:
+                return None
+
+            # Decode key
+            key = base64.b64decode(key_b64)
+
+            return key
 
         except Exception as e:
-            KEY_ERRORS.inc()
-            track_key_error()
-            log_error(f"Error deleting key for file {file_id}: {str(e)}")
-            raise
+            # Track error
+            track_encryption_error('get_key')
 
-    async def list_keys(self) -> List[Dict]:
-        """List all file keys."""
+            error_context: ErrorContext = {
+                "operation": "get_key",
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            }
+            log_error(f"Failed to get key for file {file_id}: {str(e)}")
+            raise KeyManagementError(
+                f"Failed to get key: {str(e)}",
+                details=error_context
+            )
+
+        finally:
+            # Track latency
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            track_encryption_latency(duration, 'get_key')
+
+    async def rotate_key(self, file_id: UUID) -> bytes:
+        """Rotate encryption key for a file.
+        
+        Args:
+            file_id: File ID to rotate key for
+            
+        Returns:
+            New encryption key
+            
+        Raises:
+            KeyManagementError: If key rotation fails
+        """
+        self._check_initialized()
+        start_time = datetime.utcnow()
+
         try:
             # Track operation
-            KEY_OPERATIONS.labels(operation='list').inc()
-            track_key_operation('list')
+            track_encryption_operation('rotate_key')
 
-            # List keys
-            keys = await self._list_keys()
-            log_info(f"Listed {len(keys)} keys")
-            return keys
+            # Generate new key
+            new_key = await self.generate_key(file_id)
+
+            # Mark old keys as expired
+            await self.db.execute(
+                """
+                UPDATE file_keys
+                SET expires_at = CURRENT_TIMESTAMP
+                WHERE file_id = $1
+                AND expires_at > CURRENT_TIMESTAMP
+                """,
+                str(file_id)
+            )
+
+            log_info(f"Rotated key for file {file_id}")
+            return new_key
 
         except Exception as e:
-            KEY_ERRORS.inc()
-            track_key_error()
-            log_error(f"Error listing keys: {str(e)}")
-            raise
+            # Track error
+            track_encryption_error('rotate_key')
 
-    async def _generate_key(self, file_id: UUID) -> str:
-        """Generate a new encryption key."""
-        # Implementation would generate key
-        return "key"
+            error_context: ErrorContext = {
+                "operation": "rotate_key",
+                "timestamp": datetime.utcnow(),
+                "details": {
+                    "error": str(e),
+                    "file_id": str(file_id)
+                }
+            }
+            log_error(f"Failed to rotate key for file {file_id}: {str(e)}")
+            raise KeyManagementError(
+                f"Failed to rotate key: {str(e)}",
+                details=error_context
+            )
 
-    async def _get_key(self, file_id: UUID) -> Optional[str]:
-        """Get key from storage."""
-        # Implementation would get key from storage
-        return None
+        finally:
+            # Track latency
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            track_encryption_latency(duration, 'rotate_key')
 
-    async def _delete_key(self, file_id: UUID) -> bool:
-        """Delete key from storage."""
-        # Implementation would delete key from storage
-        return True
+    async def cleanup_expired_keys(self) -> None:
+        """Clean up expired keys."""
+        self._check_initialized()
+        start_time = datetime.utcnow()
 
-    async def _list_keys(self) -> List[Dict]:
-        """List keys from storage."""
-        # Implementation would list keys from storage
-        return []
+        try:
+            # Track operation
+            track_encryption_operation('cleanup_keys')
 
-    async def _get_from_cache(self, file_id: UUID) -> Optional[str]:
-        """Get key from cache."""
-        # Implementation would get from cache
-        return None
+            # Get expired key references
+            results = await self.db.fetch_all(
+                """
+                SELECT key_reference
+                FROM file_keys
+                WHERE expires_at < CURRENT_TIMESTAMP
+                """
+            )
 
-    async def _add_to_cache(self, file_id: UUID, key: str):
-        """Add key to cache."""
-        # Implementation would add to cache
-        pass
+            # Delete from Key Vault and database
+            for result in results:
+                key_name = result['key_reference']
+                await self.key_vault.delete_secret(key_name)
 
-    async def _remove_from_cache(self, file_id: UUID):
-        """Remove key from cache."""
-        # Implementation would remove from cache
-        pass
+            await self.db.execute(
+                """
+                DELETE FROM file_keys
+                WHERE expires_at < CURRENT_TIMESTAMP
+                """
+            )
+
+            log_info(f"Cleaned up {len(results)} expired keys")
+
+        except Exception as e:
+            # Track error
+            track_encryption_error('cleanup_keys')
+
+            error_context: ErrorContext = {
+                "operation": "cleanup_keys",
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
+            log_error(f"Failed to clean up expired keys: {str(e)}")
+            raise KeyManagementError(
+                f"Failed to clean up keys: {str(e)}",
+                details=error_context
+            )
+
+        finally:
+            # Track latency
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            track_encryption_latency(duration, 'cleanup_keys')
+
+    def derive_key(self, master_key: bytes, salt: bytes, info: bytes) -> bytes:
+        """Derive an encryption key from a master key.
+        
+        Args:
+            master_key: Master key to derive from
+            salt: Salt for key derivation
+            info: Context information for key derivation
+            
+        Returns:
+            Derived key
+            
+        Raises:
+            KeyManagementError: If key derivation fails
+        """
+        try:
+            # Track operation
+            track_encryption_operation('derive_key')
+
+            # Create KDF
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,  # 256 bits
+                salt=salt,
+                iterations=100000,
+                backend=default_backend()
+            )
+
+            # Derive key
+            key = kdf.derive(master_key + info)
+
+            return key
+
+        except Exception as e:
+            # Track error
+            track_encryption_error('derive_key')
+
+            error_context: ErrorContext = {
+                "operation": "derive_key",
+                "timestamp": datetime.utcnow(),
+                "details": {"error": str(e)}
+            }
+            log_error(f"Failed to derive key: {str(e)}")
+            raise KeyManagementError(
+                f"Failed to derive key: {str(e)}",
+                details=error_context
+            )

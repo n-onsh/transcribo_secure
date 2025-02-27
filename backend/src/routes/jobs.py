@@ -1,9 +1,11 @@
 """Job management routes."""
 
-from fastapi import APIRouter, Depends, status
-from typing import List, Optional, cast
+from fastapi import Depends, status
+from typing import Optional, cast
 from datetime import datetime
+
 from ..models.job import JobResponse, JobUpdate, TranscriptionOptions
+from ..models.api import ApiResponse, ApiListResponse
 from ..services.job_manager import JobManager
 from ..utils.exceptions import (
     ResourceNotFoundError,
@@ -16,29 +18,29 @@ from ..types import (
     JobID,
     UserID
 )
+from ..utils.api import create_api_router
 from ..utils.route_utils import (
-    route_handler,
-    map_to_response
+    api_route_handler,
+    validate_pagination_params,
+    create_response,
+    create_list_response
 )
 from ..utils.dependencies import JobManagerDep
 
-router = APIRouter(
-    prefix="/jobs",
-    tags=["jobs"]
-)
+router = create_api_router("/jobs", ["jobs"])
 
 @router.get(
     "/{job_id}",
-    response_model=JobResponse,
+    response_model=ApiResponse[JobResponse],
     summary="Get Job",
     description="Get job status and information"
 )
-@route_handler("get_job", JobResponse)
+@api_route_handler("get_job", JobResponse)
 async def get_job(
     job_id: JobID,
     user_id: Optional[UserID] = None,  # Set by auth middleware
     job_manager: JobManager = Depends(JobManagerDep)
-) -> JobResponse:
+) -> ApiResponse[JobResponse]:
     """Get job information.
     
     Args:
@@ -68,11 +70,9 @@ async def get_job(
             }
             raise AuthorizationError("Not authorized to access this job", details=error_context)
             
-        return map_to_response(job, JobResponse)
+        return create_response(job, JobResponse)
         
-    except ResourceNotFoundError:
-        raise
-    except AuthorizationError:
+    except (ResourceNotFoundError, AuthorizationError):
         raise
     except Exception as e:
         error_context: ErrorContext = {
@@ -86,24 +86,28 @@ async def get_job(
 
 @router.get(
     "/",
-    response_model=List[JobResponse],
+    response_model=ApiListResponse[JobResponse],
     summary="List Jobs",
     description="List jobs for the authenticated user"
 )
-@route_handler("list_jobs", List[JobResponse])
+@api_route_handler("list_jobs", JobResponse)
 async def list_jobs(
     user_id: Optional[UserID] = None,  # Set by auth middleware
-    limit: Optional[int] = 100,
-    offset: Optional[int] = 0,
+    cursor: Optional[str] = None,
+    limit: Optional[int] = None,
+    sort_field: Optional[str] = None,
+    sort_direction: Optional[str] = None,
     language: Optional[str] = None,
     job_manager: JobManager = Depends(JobManagerDep)
-) -> List[JobResponse]:
+) -> ApiListResponse[JobResponse]:
     """List jobs for a user.
     
     Args:
         user_id: Optional user ID for filtering
+        cursor: Pagination cursor
         limit: Maximum number of jobs to return
-        offset: Number of jobs to skip
+        sort_field: Field to sort by
+        sort_direction: Sort direction (asc/desc)
         language: Optional language filter
         job_manager: Job manager service
         
@@ -115,28 +119,33 @@ async def list_jobs(
         TranscriboError: If operation fails
     """
     try:
-        # Validate parameters
-        if limit < 0 or offset < 0:
-            error_context: ErrorContext = {
-                "operation": "list_jobs",
-                "timestamp": datetime.utcnow(),
-                "details": {
-                    "error": "Invalid parameters",
-                    "limit": limit,
-                    "offset": offset
-                }
-            }
-            raise ValidationError("Invalid pagination parameters", details=error_context)
-            
-        filters = {
-            "user_id": user_id,
-            "limit": limit,
-            "offset": offset,
-            "language": language
-        }
+        # Validate pagination parameters
+        pagination = validate_pagination_params(
+            limit=limit,
+            cursor=cursor,
+            sort_field=sort_field,
+            sort_direction=sort_direction
+        )
         
-        jobs = await job_manager.list_jobs(filters)
-        return [map_to_response(job, JobResponse) for job in jobs]
+        # Get jobs with cursor
+        jobs, next_cursor, total = await job_manager.list_jobs_with_cursor(
+            cursor=pagination.cursor,
+            limit=pagination.limit,
+            sort_field=pagination.sort_field,
+            sort_direction=pagination.sort_direction,
+            filters={
+                "user_id": user_id,
+                "language": language
+            }
+        )
+        
+        return create_list_response(
+            jobs,
+            JobResponse,
+            total=total,
+            limit=pagination.limit,
+            next_cursor=next_cursor
+        )
         
     except ValidationError:
         raise
@@ -147,23 +156,26 @@ async def list_jobs(
             "timestamp": datetime.utcnow(),
             "details": {
                 "error": str(e),
-                "filters": filters
+                "filters": {
+                    "user_id": user_id,
+                    "language": language
+                }
             }
         }
         raise TranscriboError("Failed to list jobs", details=error_context)
 
 @router.post(
     "/{job_id}/cancel",
-    response_model=JobResponse,
+    response_model=ApiResponse[JobResponse],
     summary="Cancel Job",
     description="Cancel a running job"
 )
-@route_handler("cancel_job", JobResponse)
+@api_route_handler("cancel_job", JobResponse)
 async def cancel_job(
     job_id: JobID,
     user_id: Optional[UserID] = None,  # Set by auth middleware
     job_manager: JobManager = Depends(JobManagerDep)
-) -> JobResponse:
+) -> ApiResponse[JobResponse]:
     """Cancel a job.
     
     Args:
@@ -195,11 +207,9 @@ async def cancel_job(
         # Cancel job
         await job_manager.update_job_status(job_id, "cancelled")
         updated_job = await job_manager.get_job_status(job_id)
-        return map_to_response(updated_job, JobResponse)
+        return create_response(updated_job, JobResponse)
         
-    except ResourceNotFoundError:
-        raise
-    except AuthorizationError:
+    except (ResourceNotFoundError, AuthorizationError):
         raise
     except Exception as e:
         error_context: ErrorContext = {
@@ -213,16 +223,16 @@ async def cancel_job(
 
 @router.post(
     "/{job_id}/retry",
-    response_model=JobResponse,
+    response_model=ApiResponse[JobResponse],
     summary="Retry Job",
     description="Retry a failed job"
 )
-@route_handler("retry_job", JobResponse)
+@api_route_handler("retry_job", JobResponse)
 async def retry_job(
     job_id: JobID,
     user_id: Optional[UserID] = None,  # Set by auth middleware
     job_manager: JobManager = Depends(JobManagerDep)
-) -> JobResponse:
+) -> ApiResponse[JobResponse]:
     """Retry a failed job.
     
     Args:
@@ -268,13 +278,9 @@ async def retry_job(
         # Retry job
         await job_manager.update_job_status(job_id, "pending")
         updated_job = await job_manager.get_job_status(job_id)
-        return map_to_response(updated_job, JobResponse)
+        return create_response(updated_job, JobResponse)
         
-    except ResourceNotFoundError:
-        raise
-    except AuthorizationError:
-        raise
-    except ValidationError:
+    except (ResourceNotFoundError, AuthorizationError, ValidationError):
         raise
     except Exception as e:
         error_context: ErrorContext = {

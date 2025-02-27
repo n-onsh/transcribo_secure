@@ -1,0 +1,97 @@
+groups:
+  - name: resource_alerts
+    rules:
+      # Memory Usage Alerts
+      - alert: HighGPUMemoryUsage
+        expr: transcribo_transcriber_gpu_memory_bytes{type="allocated"} / transcribo_transcriber_gpu_memory_bytes{type="reserved"} > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High GPU memory usage
+          description: GPU memory usage is above 90% for more than 5 minutes
+
+      - alert: HighCPUMemoryUsage
+        expr: transcribo_transcriber_cpu_memory_bytes / node_memory_MemTotal_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High CPU memory usage
+          description: CPU memory usage is above 85% for more than 5 minutes
+
+      # Resource Utilization Alerts
+      - alert: HighGPUUtilization
+        expr: transcribo_transcriber_gpu_utilization_percent > 95
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: High GPU utilization
+          description: GPU utilization is above 95% for more than 10 minutes
+
+      - alert: HighCPUUtilization
+        expr: transcribo_transcriber_cpu_utilization_percent > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: High CPU utilization
+          description: CPU utilization is above 90% for more than 10 minutes
+
+      # Queue Alerts
+      - alert: LongQueueWaitTime
+        expr: histogram_quantile(0.95, rate(transcribo_transcriber_queue_wait_duration_seconds_bucket[5m])) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Long queue wait times
+          description: 95th percentile of queue wait time is above 5 minutes
+
+      - alert: LargeQueueSize
+        expr: transcribo_transcriber_queue_size > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Large queue size
+          description: Queue size is above 50 tasks for more than 5 minutes
+
+      # Processing Alerts
+      - alert: HighProcessingErrorRate
+        expr: rate(transcribo_transcriber_processing_errors_total[5m]) / rate(transcribo_transcriber_processing_total{status="success"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High processing error rate
+          description: Error rate is above 10% for more than 5 minutes
+
+      - alert: SlowProcessing
+        expr: histogram_quantile(0.95, rate(transcribo_transcriber_processing_duration_seconds_bucket{status="success"}[5m])) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Slow processing times
+          description: 95th percentile of processing time is above 10 minutes
+
+      # Model Performance Alerts
+      - alert: SlowModelLoading
+        expr: histogram_quantile(0.95, rate(transcribo_transcriber_model_load_duration_seconds_bucket[5m])) > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Slow model loading
+          description: 95th percentile of model loading time is above 1 minute
+
+      - alert: SlowModelInference
+        expr: histogram_quantile(0.95, rate(transcribo_transcriber_model_inference_duration_seconds_bucket[5m])) > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Slow model inference
+          description: 95th percentile of model inference time is above 5 minutes

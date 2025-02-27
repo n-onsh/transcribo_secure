@@ -6,10 +6,9 @@ from fastapi import Depends, Request
 from ..services.provider import ServiceProvider, service_provider, ServiceLifetime
 from ..types import (
     ServiceProtocol,
-    ErrorContext,
-    ServiceConfig
+    ErrorContext
 )
-from ..utils.exceptions import DependencyError, TranscriboError
+from ..utils.exceptions import DependencyError
 from ..utils.logging import log_error
 
 T = TypeVar('T')
@@ -38,16 +37,40 @@ def get_service(service_type: Type[ServiceType]) -> ServiceType:
     Raises:
         DependencyError: If service cannot be retrieved
     """
-    def _get_service(provider: ServiceProvider = Depends(get_provider)) -> ServiceType:
+    def _get_service(
+        request: Request,
+        provider: ServiceProvider = Depends(get_provider)
+    ) -> ServiceType:
         try:
-            return provider.get(service_type)
+            # Add request ID to error context if available
+            request_id = getattr(request.state, "request_id", None)
+            
+            service = provider.get(service_type)
+            if service is None:
+                error_context: ErrorContext = {
+                    "operation": "get_service",
+                    "timestamp": datetime.utcnow(),
+                    "details": {
+                        "service_type": service_type.__name__,
+                        "request_id": request_id
+                    }
+                }
+                raise DependencyError(
+                    f"Service {service_type.__name__} not found",
+                    details=error_context
+                )
+            return service
+            
+        except DependencyError:
+            raise
         except Exception as e:
-            error_context: ErrorContext = {
+            error_context = {
                 "operation": "get_service",
                 "timestamp": datetime.utcnow(),
                 "details": {
                     "error": str(e),
-                    "service_type": service_type.__name__
+                    "service_type": service_type.__name__,
+                    "request_id": request_id
                 }
             }
             log_error(f"Failed to get service {service_type.__name__}: {str(e)}")
@@ -56,106 +79,6 @@ def get_service(service_type: Type[ServiceType]) -> ServiceType:
                 details=error_context
             )
     return Depends(_get_service)
-
-def get_scoped_service(service_type: Type[ServiceType]) -> ServiceType:
-    """Get a scoped service instance.
-    
-    Args:
-        service_type: Type of service to get
-        
-    Returns:
-        Service instance
-        
-    Raises:
-        DependencyError: If service cannot be retrieved or is not scoped
-    """
-    def _get_scoped_service(
-        request: Request,
-        provider: ServiceProvider = Depends(get_provider)
-    ) -> ServiceType:
-        try:
-            # Check if service is already created for this request
-            if not hasattr(request.state, 'services'):
-                request.state.services = {}
-                
-            if service_type not in request.state.services:
-                # Get service registration
-                registration = provider._registrations.get(service_type)
-                if not registration:
-                    raise DependencyError(f"No service registered for type {service_type.__name__}")
-                    
-                if registration["lifetime"] != ServiceLifetime.SCOPED:
-                    raise DependencyError(f"Service {service_type.__name__} is not scoped")
-                    
-                # Create new instance for this request
-                instance = provider.get(service_type)
-                request.state.services[service_type] = instance
-                
-            return cast(ServiceType, request.state.services[service_type])
-            
-        except DependencyError:
-            raise
-        except Exception as e:
-            error_context: ErrorContext = {
-                "operation": "get_scoped_service",
-                "timestamp": datetime.utcnow(),
-                "details": {
-                    "error": str(e),
-                    "service_type": service_type.__name__
-                }
-            }
-            log_error(f"Failed to get scoped service {service_type.__name__}: {str(e)}")
-            raise DependencyError(
-                f"Failed to get scoped service {service_type.__name__}",
-                details=error_context
-            )
-    return Depends(_get_scoped_service)
-
-def validate_service_dependencies(
-    service_type: Type[ServiceType],
-    provider: ServiceProvider
-) -> None:
-    """Validate service dependencies.
-    
-    Args:
-        service_type: Type of service to validate
-        provider: Service provider instance
-        
-    Raises:
-        DependencyError: If dependencies are invalid
-    """
-    try:
-        # Get service registration
-        registration = provider._registrations.get(service_type)
-        if not registration:
-            raise DependencyError(f"No service registered for type {service_type.__name__}")
-            
-        # Check each dependency
-        for dep_type in registration["dependencies"]:
-            if dep_type not in provider._registrations:
-                raise DependencyError(
-                    f"Missing dependency {dep_type.__name__} for service {service_type.__name__}"
-                )
-                
-            # Recursively validate dependencies
-            validate_service_dependencies(cast(Type[ServiceType], dep_type), provider)
-            
-    except DependencyError:
-        raise
-    except Exception as e:
-        error_context: ErrorContext = {
-            "operation": "validate_dependencies",
-            "timestamp": datetime.utcnow(),
-            "details": {
-                "error": str(e),
-                "service_type": service_type.__name__
-            }
-        }
-        log_error(f"Failed to validate dependencies for {service_type.__name__}: {str(e)}")
-        raise DependencyError(
-            f"Failed to validate dependencies for {service_type.__name__}",
-            details=error_context
-        )
 
 # Import services
 from ..services.database import DatabaseService

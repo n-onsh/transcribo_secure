@@ -6,6 +6,7 @@
     <title>File Upload</title>
     <link href="/static/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="/static/css/progress_indicator.css" rel="stylesheet">
     <style>
         .tooltip-icon {
             cursor: help;
@@ -171,44 +172,14 @@
                         </div>
 
                         <!-- ZIP Processing Progress -->
-                        <div id="zip-progress" style="display: none">
-                            <!-- Extraction Progress -->
-                            <div class="mb-3">
-                                <div class="d-flex justify-content-between align-items-center mb-1">
-                                    <span>
-                                        <i class="bi bi-file-earmark-zip me-2"></i>
-                                        Extracting Files
-                                    </span>
-                                    <span class="badge bg-primary" id="zip-extract-status">0%</span>
-                                </div>
-                                <div class="progress">
-                                    <div class="progress-bar bg-primary progress-bar-striped progress-bar-animated"
-                                         role="progressbar"
-                                         style="width: 0%"
-                                         id="zip-extract-progress"></div>
-                                </div>
-                            </div>
-
-                            <!-- Processing Progress -->
-                            <div class="mb-3">
-                                <div class="d-flex justify-content-between align-items-center mb-1">
-                                    <span>
-                                        <i class="bi bi-cpu me-2"></i>
-                                        Processing Files
-                                    </span>
-                                    <span class="badge bg-info" id="zip-process-status">0%</span>
-                                </div>
-                                <div class="progress">
-                                    <div class="progress-bar bg-info progress-bar-striped progress-bar-animated"
-                                         role="progressbar"
-                                         style="width: 0%"
-                                         id="zip-process-progress"></div>
-                                </div>
-                            </div>
-
-                            <!-- File Status -->
-                            <div class="small text-muted mb-3" id="zip-file-status"></div>
-                        </div>
+                        {% with stages=[
+                            {"id": "uploading", "name": "Upload", "icon": "bi-cloud-upload", "description": "Uploading file to server"},
+                            {"id": "extracting", "name": "Extract", "icon": "bi-file-earmark-zip", "description": "Extracting files from ZIP"},
+                            {"id": "processing", "name": "Process", "icon": "bi-cpu", "description": "Processing audio files"},
+                            {"id": "completed", "name": "Complete", "icon": "bi-check-circle", "description": "Processing complete"}
+                        ], current_stage="uploading", progress=0, overall_progress=0 %}
+                        {% include "components/progress_indicator.html" %}
+                        {% endwith %}
 
                         <!-- Validation Errors -->
                         <div class="validation-error" id="validation-errors"></div>
@@ -224,6 +195,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/progress_indicator.js"></script>
     <script>
         // Initialize tooltips
         const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
@@ -441,17 +413,9 @@
             const progressBar = document.getElementById('progress-bar');
             const progressBarInner = progressBar.querySelector('.progress-bar');
             const progressLabel = progressBar.querySelector('.progress-label');
-            const zipProgress = document.getElementById('zip-progress');
             
             progressBar.style.display = 'block';
             uploadBtn.disabled = true;
-
-            // Reset ZIP progress
-            document.getElementById('zip-extract-progress').style.width = '0%';
-            document.getElementById('zip-extract-status').textContent = '0%';
-            document.getElementById('zip-process-progress').style.width = '0%';
-            document.getElementById('zip-process-status').textContent = '0%';
-            document.getElementById('zip-file-status').textContent = '';
             
             try {
                 let fileIndex = 0;
@@ -463,9 +427,6 @@
                     formData.append('hash_algorithm', fileData.hashAlgorithm);
                     
                     const isZip = fileData.file.name.toLowerCase().endsWith('.zip');
-                    if (isZip) {
-                        zipProgress.style.display = 'block';
-                    }
 
                     const response = await fetch('/api/files/upload', {
                         method: 'POST',
@@ -502,7 +463,6 @@
                 setTimeout(() => {
                     validationErrors.innerHTML = '';
                     progressBar.style.display = 'none';
-                    zipProgress.style.display = 'none';
                 }, 3000);
                 
             } catch (error) {
@@ -515,11 +475,9 @@
 
         // Function to poll ZIP progress
         async function pollZipProgress(jobId) {
-            const extractProgress = document.getElementById('zip-extract-progress');
-            const extractStatus = document.getElementById('zip-extract-status');
-            const processProgress = document.getElementById('zip-process-progress');
-            const processStatus = document.getElementById('zip-process-status');
-            const fileStatus = document.getElementById('zip-file-status');
+            const progressTracker = document.querySelector('.progress-tracker');
+            progressTracker.setAttribute('data-job-id', jobId);
+            progressTracker.style.display = 'block';
 
             while (true) {
                 try {
@@ -532,23 +490,19 @@
                     
                     if (status.is_zip) {
                         const progress = status.zip_progress || {};
-                        
-                        if (progress.stage === 'extracting') {
-                            extractProgress.style.width = `${progress.percent}%`;
-                            extractStatus.textContent = `${Math.round(progress.percent)}%`;
-                            fileStatus.textContent = 'Extracting files from ZIP archive...';
-                        } else if (progress.stage === 'processing') {
-                            extractProgress.style.width = '100%';
-                            extractStatus.textContent = '100%';
-                            processProgress.style.width = `${progress.percent}%`;
-                            processStatus.textContent = `${Math.round(progress.percent)}%`;
-                            fileStatus.textContent = `Processing ${status.sub_jobs?.length || 0} files...`;
-                        } else if (progress.stage === 'completed') {
-                            extractProgress.style.width = '100%';
-                            extractStatus.textContent = '100%';
-                            processProgress.style.width = '100%';
-                            processStatus.textContent = '100%';
-                            fileStatus.textContent = 'Processing complete!';
+                        const event = new CustomEvent('progress-update', {
+                            detail: {
+                                stage: progress.stage,
+                                progress: progress.percent,
+                                overall_progress: progress.overall_progress,
+                                completed_stages: progress.completed_stages || [],
+                                estimated_time: status.estimated_time,
+                                resource_usage: status.resource_usage
+                            }
+                        });
+                        progressTracker.dispatchEvent(event);
+
+                        if (progress.stage === 'completed') {
                             break;
                         }
 

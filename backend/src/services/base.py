@@ -1,192 +1,124 @@
-"""Base service class with common functionality."""
+"""Base service class."""
 
-import asyncio
-from typing import Dict, Any, Optional, TypeVar, Generic, Callable, Awaitable, cast
-from ..utils.logging import log_info, log_error
-from ..utils.exceptions import TranscriboError
-from ..utils.metrics import track_time, SERVICE_OPERATION_DURATION
-from ..types import (
-    ServiceProtocol,
-    ServiceConfig,
-    AsyncHandler,
-    ErrorContext,
-    Result
-)
+from typing import List, Type, TypeVar, Optional, Dict, Any, Set
+from datetime import datetime
+from ..types import ServiceConfig, ErrorContext
+from ..utils.exceptions import ServiceError
 
-T = TypeVar('T', bound='BaseService')
+T = TypeVar('T')
 
-class BaseService(Generic[T], ServiceProtocol):
-    """Base class for services with standard initialization/cleanup."""
+class BaseService:
+    """Base class for all services."""
     
-    def __init__(self, settings: Optional[ServiceConfig] = None) -> None:
-        """Initialize base service.
+    # Class-level dependency declarations
+    __dependencies__: List[Type['BaseService']] = []
+    
+    def __init__(self, config: Optional[ServiceConfig] = None):
+        """Initialize service.
         
         Args:
-            settings: Optional service configuration
+            config: Optional service configuration
         """
-        self.settings: ServiceConfig = cast(ServiceConfig, settings or {})
-        self.initialized: bool = False
-        self._locks: Dict[str, asyncio.Lock] = {}  # Operation locks for concurrency control
+        self.config = config or {}
         
+        # Instance-level dependency tracking
+        self._initialized = False
+        self._dependencies: Set[Type['BaseService']] = set()
+        
+        # Add class-level dependencies
+        if hasattr(self.__class__, "__dependencies__"):
+            deps = getattr(self.__class__, "__dependencies__")
+            if isinstance(deps, list):
+                self._dependencies.update(deps)
+    
+    def add_dependency(self, service_type: Type['BaseService']) -> None:
+        """Add dependency.
+        
+        Args:
+            service_type: Service type to depend on
+        """
+        self._dependencies.add(service_type)
+    
+    def get_dependencies(self) -> Set[Type['BaseService']]:
+        """Get service dependencies.
+        
+        Returns:
+            Set of service types this service depends on
+        """
+        return self._dependencies
+    
+    def has_dependency(self, service_type: Type['BaseService']) -> bool:
+        """Check if service has dependency.
+        
+        Args:
+            service_type: Service type to check
+            
+        Returns:
+            True if service depends on given type
+        """
+        return service_type in self._dependencies
+    
     async def initialize(self) -> None:
-        """Initialize the service.
+        """Initialize service.
         
-        This method:
-        1. Checks if already initialized
-        2. Calls implementation-specific initialization
-        3. Sets initialized flag
-        4. Logs completion
-        
-        Raises:
-            TranscriboError: If initialization fails
+        This method should be overridden by services that need
+        asynchronous initialization.
         """
-        if self.initialized:
-            return
-
-        try:
-            await self._initialize_impl()
-            self.initialized = True
-            log_info(f"{self.__class__.__name__} initialized")
-            
-        except Exception as e:
-            error_context: ErrorContext = {
-                "operation": "initialize",
-                "resource_id": self.__class__.__name__,
-                "timestamp": asyncio.get_event_loop().time(),
-                "details": {"error": str(e)}
-            }
-            log_error(f"Failed to initialize {self.__class__.__name__}: {str(e)}")
-            raise TranscriboError(
-                f"Failed to initialize {self.__class__.__name__}",
-                details=error_context
-            )
-            
-    async def cleanup(self) -> None:
-        """Clean up the service.
-        
-        This method:
-        1. Checks if initialized
-        2. Calls implementation-specific cleanup
-        3. Clears initialized flag
-        4. Logs completion
-        
-        Raises:
-            TranscriboError: If cleanup fails
-        """
-        if not self.initialized:
+        if self._initialized:
             return
             
         try:
-            await self._cleanup_impl()
-            self.initialized = False
-            log_info(f"{self.__class__.__name__} cleaned up")
+            await self._initialize()
+            self._initialized = True
             
         except Exception as e:
             error_context: ErrorContext = {
-                "operation": "cleanup",
-                "resource_id": self.__class__.__name__,
-                "timestamp": asyncio.get_event_loop().time(),
-                "details": {"error": str(e)}
-            }
-            log_error(f"Error during {self.__class__.__name__} cleanup: {str(e)}")
-            raise TranscriboError(
-                f"Failed to clean up {self.__class__.__name__}",
-                details=error_context
-            )
-            
-    async def _initialize_impl(self) -> None:
-        """Implementation-specific initialization.
-        
-        Override this method to provide service-specific initialization.
-        """
-        pass
-        
-    async def _cleanup_impl(self) -> None:
-        """Implementation-specific cleanup.
-        
-        Override this method to provide service-specific cleanup.
-        """
-        pass
-        
-    def _check_initialized(self) -> None:
-        """Check if service is initialized.
-        
-        Raises:
-            TranscriboError: If service is not initialized
-        """
-        if not self.initialized:
-            raise TranscriboError(f"{self.__class__.__name__} not initialized")
-            
-    async def _with_lock(self, key: str, operation: AsyncHandler) -> Any:
-        """Execute operation with a lock.
-        
-        Args:
-            key: Lock key
-            operation: Async operation to execute
-            
-        Returns:
-            Result of the operation
-            
-        This method ensures only one operation with the same key
-        can execute at a time.
-        """
-        if key not in self._locks:
-            self._locks[key] = asyncio.Lock()
-            
-        async with self._locks[key]:
-            return await operation()
-            
-    @track_time(SERVICE_OPERATION_DURATION)
-    async def _execute_operation(
-        self,
-        operation: str,
-        func: AsyncHandler,
-        *args: Any,
-        **kwargs: Any
-    ) -> Result:
-        """Execute a service operation with tracking.
-        
-        Args:
-            operation: Operation name for tracking
-            func: Function to execute
-            *args: Positional arguments for the function
-            **kwargs: Keyword arguments for the function
-            
-        Returns:
-            Result of the operation
-            
-        This method:
-        1. Checks if service is initialized
-        2. Tracks operation timing
-        3. Handles exceptions consistently
-        """
-        self._check_initialized()
-        
-        try:
-            result = await func(*args, **kwargs)
-            return {
-                "success": True,
-                "message": f"{operation} completed successfully",
-                "data": result,
-                "error": None
-            }
-            
-        except TranscriboError:
-            raise
-            
-        except Exception as e:
-            error_context: ErrorContext = {
-                "operation": operation,
-                "resource_id": self.__class__.__name__,
-                "timestamp": asyncio.get_event_loop().time(),
+                "operation": "initialize_service",
+                "timestamp": datetime.utcnow(),
                 "details": {
-                    "error": str(e),
-                    "args": args,
-                    "kwargs": kwargs
+                    "service": self.__class__.__name__,
+                    "error": str(e)
                 }
             }
-            log_error(f"Error in {operation}: {str(e)}")
-            raise TranscriboError(
-                f"Failed to {operation}",
+            raise ServiceError(
+                f"Failed to initialize service {self.__class__.__name__}",
                 details=error_context
-            )
+            ) from e
+    
+    async def _initialize(self) -> None:
+        """Internal initialization.
+        
+        This method should be overridden by services that need
+        asynchronous initialization.
+        """
+        pass
+    
+    @property
+    def initialized(self) -> bool:
+        """Check if service is initialized.
+        
+        Returns:
+            True if service is initialized
+        """
+        return self._initialized
+    
+    def __str__(self) -> str:
+        """Get string representation.
+        
+        Returns:
+            String representation of service
+        """
+        return f"{self.__class__.__name__}(initialized={self._initialized})"
+    
+    def __repr__(self) -> str:
+        """Get detailed string representation.
+        
+        Returns:
+            Detailed string representation of service
+        """
+        return (
+            f"{self.__class__.__name__}("
+            f"initialized={self._initialized}, "
+            f"dependencies={[d.__name__ for d in self._dependencies]}"
+            ")"
+        )

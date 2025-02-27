@@ -1,0 +1,69 @@
+<div class="progress-tracker mb-4" data-job-id="{{ job_id }}">
+    <!-- Stage Progress -->
+    <div class="progress-stages mb-3">
+        <div class="d-flex justify-content-between">
+            {% for stage in stages %}
+            <div class="progress-stage text-center" data-stage-id="{{ stage.id }}">
+                <div class="stage-icon mb-2 {% if stage.id == current_stage %}active{% elif loop.index0 < stages.index(current_stage) %}completed{% endif %}">
+                    {% if stage.icon %}
+                    <i class="bi {{ stage.icon }}"></i>
+                    {% else %}
+                    <span>{{ loop.index }}</span>
+                    {% endif %}
+                </div>
+                <div class="stage-name">{{ stage.name }}</div>
+                {% if stage.description %}
+                <div class="stage-description small text-muted">{{ stage.description }}</div>
+                {% endif %}
+            </div>
+            {% if not loop.last %}
+            <div class="progress-connector">
+                <div class="connector-line {% if loop.index0 < stages.index(current_stage) %}completed{% endif %}"></div>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+    
+    <!-- Current Stage Progress -->
+    <div class="current-stage-progress mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+            <span>
+                {% for stage in stages %}
+                {% if stage.id == current_stage %}
+                <i class="bi {% if stage.icon %}{{ stage.icon }}{% else %}bi-arrow-right-circle{% endif %} me-2"></i>
+                {{ stage.name }}
+                {% endif %}
+                {% endfor %}
+            </span>
+            <span class="badge bg-primary">{{ progress | round(1) }}%</span>
+        </div>
+        <div class="progress" style="height: 0.5rem;">
+            <div class="progress-bar bg-info"
+                 role="progressbar"
+                 style="width: {{ progress }}%"
+                 aria-valuenow="{{ progress }}"
+                 aria-valuemin="0"
+                 aria-valuemax="100"></div>
+        </div>
+    </div>
+    
+    <!-- Additional Information -->
+    <div class="progress-info d-flex justify-content-between text-muted small">
+        {% if estimated_time %}
+        <div>
+            <i class="bi bi-clock me-1"></i>
+            Estimated time: {{ format_time(estimated_time) }}
+        </div>
+        {% endif %}
+        
+        {% if resource_usage %}
+        <div>
+            <i class="bi bi-cpu me-1"></i>
+            CPU: {{ resource_usage.get('cpu', 0) | round(1) }}%
+            <i class="bi bi-memory me-1 ms-2"></i>
+            Memory: {{ resource_usage.get('memory', 0) | round(1) }}%
+        </div>
+        {% endif %}
+    </div>
+</div>

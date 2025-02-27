@@ -1,75 +1,94 @@
-"""Backend application."""
+"""Main FastAPI application."""
 
+import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import make_asgi_app
+from fastapi.responses import JSONResponse
 
-from .routes import auth, editor, files, jobs, keys, transcriber, viewer, vocabulary, verify, tags, offline, zip
-from .middleware import auth as auth_middleware
-from .middleware import error_handler, file_validation, metrics, security
-from .services.provider import ServiceProvider
-from .utils import setup_metrics
+from .config import config
+from .constants import API_V1_PREFIX, REQUEST_ID_HEADER
+from .middleware.error_handler import setup_error_handling
+from .middleware.request_id import RequestIDMiddleware
+from .models.api import ApiResponse
+from .routes import (
+    auth,
+    editor,
+    files,
+    jobs,
+    keys,
+    tags,
+    transcriber,
+    verify,
+    viewer,
+    vocabulary,
+    zip
+)
 from .utils.logging import setup_logging
+from .utils.metrics import setup_metrics
 
-# Configure logging
+# Create FastAPI application
+app = FastAPI(
+    title="Transcribo",
+    description="Secure transcription service",
+    version="1.0.0",
+    docs_url=f"{API_V1_PREFIX}/docs",
+    redoc_url=f"{API_V1_PREFIX}/redoc",
+    openapi_url=f"{API_V1_PREFIX}/openapi.json"
+)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*", REQUEST_ID_HEADER]
+)
+
+# Add request ID middleware
+app.add_middleware(RequestIDMiddleware)
+
+# Set up error handling
+setup_error_handling(app)
+
+# Set up logging
 setup_logging()
-
-# Create FastAPI app
-app = FastAPI()
-
-# Create metrics app
-metrics_app = make_asgi_app()
 
 # Set up metrics
 setup_metrics()
 
-# Initialize service provider
-service_provider = ServiceProvider()
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Add custom middleware
-app.add_middleware(auth_middleware.AuthMiddleware)
-app.add_middleware(error_handler.ErrorHandlerMiddleware)
-app.add_middleware(file_validation.FileValidationMiddleware)
-app.add_middleware(metrics.MetricsMiddleware)
-app.add_middleware(security.SecurityMiddleware)
-
-# Mount metrics endpoint
-app.mount("/metrics", metrics_app)
-
 # Include routers
-app.include_router(auth.router)
-app.include_router(editor.router)
-app.include_router(files.router)
-app.include_router(jobs.router)
-app.include_router(keys.router)
-app.include_router(transcriber.router)
-app.include_router(viewer.router)
-app.include_router(vocabulary.router)
-app.include_router(verify.router)
-app.include_router(tags.router)
-app.include_router(offline.router)
-app.include_router(zip.router)
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(editor.router, tags=["editor"])
+app.include_router(files.router, tags=["files"])
+app.include_router(jobs.router, tags=["jobs"])
+app.include_router(keys.router, tags=["keys"])
+app.include_router(tags.router, tags=["tags"])
+app.include_router(transcriber.router, tags=["transcriber"])
+app.include_router(verify.router, tags=["verify"])
+app.include_router(viewer.router, tags=["viewer"])
+app.include_router(vocabulary.router, tags=["vocabulary"])
+app.include_router(zip.router, tags=["zip"])
 
+# Health check endpoint
 @app.get("/health")
-async def health_check():
+async def health_check(request: Request) -> ApiResponse[dict]:
     """Health check endpoint."""
-    return {"status": "healthy"}
+    return ApiResponse(
+        data={"status": "ok"},
+        request_id=getattr(request.state, "request_id", None)
+    )
 
+# Startup event
 @app.on_event("startup")
-async def startup():
-    """Initialize services on startup."""
-    await service_provider.initialize()
+async def startup_event():
+    """Run startup tasks."""
+    # Initialize services
+    pass
 
+# Shutdown event
 @app.on_event("shutdown")
-async def shutdown():
-    """Clean up services on shutdown."""
-    await service_provider.cleanup()
+async def shutdown_event():
+    """Run shutdown tasks."""
+    # Cleanup services
+    pass

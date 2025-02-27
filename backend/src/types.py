@@ -1,295 +1,155 @@
-"""Common type definitions for the application."""
+"""Type definitions for the backend."""
 
-from typing import (
-    TypeVar, Dict, List, Optional, Union, Any, Protocol,
-    TypedDict, Callable, Awaitable, Tuple, NewType, Set
-)
+from enum import Enum
+from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
-from uuid import UUID
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-from .models.base import Base
 
-# Type variables
-ModelType = TypeVar('ModelType', bound=Base)
-ResponseType = TypeVar('ResponseType', bound=BaseModel)
+class ErrorSeverity(str, Enum):
+    """Error severity levels."""
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
 
-# Simple type aliases
-JobID = NewType('JobID', str)
-UserID = NewType('UserID', str)
-FileID = NewType('FileID', str)
-TagID = NewType('TagID', str)
+class RecoverySuggestion(BaseModel):
+    """Recovery suggestion for errors."""
+    action: str
+    description: str
+    code_example: Optional[str] = None
 
-# JSON-related types
-JSON = Dict[str, Any]
-JSONList = List[JSON]
-JSONValue = Union[str, int, float, bool, None, Dict[str, Any], List[Any]]
-
-# Database-related types
-DBSession = AsyncSession
-QueryResult = List[Dict[str, Any]]
-TransactionResult = List[QueryResult]
-
-# Common dictionary types
-class FileMetadata(TypedDict, total=False):
-    """File metadata structure."""
-    name: str
-    size: int
-    type: str
-    created_at: datetime
-    updated_at: datetime
-    owner_id: UserID
-    tags: List[TagID]
-    original_files: List[str]
-    is_combined: bool
-    hash: str
-    hash_algorithm: str
-    mime_type: str
-    duration: float
-
-class FileUploadResult(TypedDict):
-    """Type definition for file upload result."""
-    file_path: str
-    metadata: FileMetadata
-
-class FileOptions(TypedDict, total=False):
-    """Type definition for file options."""
-    language: Optional[str]
-    vocabulary: List[str]
-    generate_srt: bool
-
-class JobOptions(TypedDict, total=False):
-    """Job options structure."""
-    vocabulary: List[str]
-    generate_srt: bool
-    language: str
-    priority: int
-    max_retries: int
-
-class JobProgress(TypedDict):
-    """Job progress structure."""
-    stage: str
-    percent: float
-    message: Optional[str]
-
-class ZIPProgress(TypedDict):
-    """ZIP processing progress structure."""
-    stage: str
-    percent: float
-    files_processed: int
-    total_files: int
-    current_file: Optional[str]
-
-# Protocol classes
-class ServiceProtocol(Protocol):
-    """Base protocol for services."""
-    initialized: bool
-    
-    async def initialize(self) -> None:
-        """Initialize the service."""
-        ...
-        
-    async def cleanup(self) -> None:
-        """Clean up the service."""
-        ...
-
-class RepositoryProtocol(Protocol[ModelType]):
-    """Base protocol for repositories."""
-    session: DBSession
-    model_class: type[ModelType]
-    
-    async def get(self, id: str) -> Optional[ModelType]:
-        """Get a record by ID."""
-        ...
-        
-    async def list(
-        self,
-        filters: Optional[Dict[str, Any]] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None
-    ) -> List[ModelType]:
-        """List records with optional filtering."""
-        ...
-
-# Handler types
-RouteHandler = Callable[..., Awaitable[Any]]
-ErrorHandler = Callable[..., Awaitable[Any]]
-MiddlewareHandler = Callable[..., Awaitable[Any]]
-
-# Metric types
-MetricLabels = Dict[str, str]
-MetricValue = Union[int, float]
-MetricCallback = Callable[[], MetricValue]
-
-# Common result types
-class Result(TypedDict):
-    """Generic result structure."""
-    success: bool
-    message: str
-    data: Optional[Any]
-    error: Optional[str]
-
-class ValidationResult(TypedDict):
-    """Validation result structure."""
-    valid: bool
-    errors: List[str]
-
-class ProcessingResult(TypedDict):
-    """Processing result structure."""
-    success: bool
-    duration: float
-    errors: List[str]
-    metrics: Dict[str, float]
-
-# Service configuration types
-class ServiceConfig(TypedDict, total=False):
-    """Service configuration structure."""
-    name: str
-    enabled: bool
-    timeout: int
-    retry_count: int
-    batch_size: int
-    cache_ttl: int
-    max_connections: int
-    pool_size: int
-
-# Security types
-class TokenData(TypedDict):
-    """Token data structure."""
-    sub: str
-    exp: datetime
-    scope: List[str]
-    roles: List[str]
-
-class Credentials(TypedDict):
-    """Credentials structure."""
-    username: str
-    password: str
-
-# Resource types
-class ResourceMetrics(TypedDict):
-    """Resource metrics structure."""
-    cpu_usage: float
-    memory_usage: float
-    disk_usage: float
-    network_in: float
-    network_out: float
-
-class ResourceLimits(TypedDict):
-    """Resource limits structure."""
-    max_cpu: float
-    max_memory: float
-    max_disk: float
-    max_bandwidth: float
-
-# Function types
-AsyncHandler = Callable[..., Awaitable[Any]]
-SyncHandler = Callable[..., Any]
-Decorator = Callable[[AsyncHandler], AsyncHandler]
-
-# Error types
-class ErrorContext(TypedDict, total=False):
-    """Error context structure."""
+class EnhancedErrorContext(BaseModel):
+    """Enhanced error context with recovery suggestions."""
     operation: str
-    resource_id: str
-    user_id: str
     timestamp: datetime
-    trace_id: str
-    details: Dict[str, Any]
+    severity: ErrorSeverity = ErrorSeverity.ERROR
+    resource_id: Optional[str] = None
+    user_id: Optional[str] = None
+    request_id: Optional[str] = None
+    details: Dict[str, Any] = {}
+    recovery_suggestions: List[RecoverySuggestion] = []
+    error_category: Optional[str] = None
+    is_retryable: bool = False
+    retry_after: Optional[int] = None  # seconds
 
-# Cache types
-CacheKey = Union[str, Tuple[str, ...]]
-CacheValue = Any
-CacheTTL = int
+class ErrorCode(str, Enum):
+    """Error codes for the application."""
+    INTERNAL_ERROR = "internal_error"
+    VALIDATION_ERROR = "validation_error"
+    AUTHENTICATION_ERROR = "authentication_error"
+    AUTHORIZATION_ERROR = "authorization_error"
+    RESOURCE_NOT_FOUND = "resource_not_found"
+    RESOURCE_EXISTS = "resource_exists"
+    SERVICE_UNAVAILABLE = "service_unavailable"
+    DEPENDENCY_UNAVAILABLE = "dependency_unavailable"
+    DATABASE_ERROR = "database_error"
+    DATABASE_UNAVAILABLE = "database_unavailable"
+    STORAGE_ERROR = "storage_error"
+    STORAGE_UNAVAILABLE = "storage_unavailable"
+    ENCRYPTION_ERROR = "encryption_error"
+    KEY_MANAGEMENT_ERROR = "key_management_error"
+    TRANSCRIPTION_ERROR = "transcription_error"
+    ZIP_ERROR = "zip_error"
+    FILE_NOT_FOUND = "file_not_found"
+    FILE_TOO_LARGE = "file_too_large"
+    FILE_CORRUPTED = "file_corrupted"
+    UNSUPPORTED_FILE_TYPE = "unsupported_file_type"
+    QUOTA_EXCEEDED = "quota_exceeded"
+    TOKEN_EXPIRED = "token_expired"
+    TOKEN_INVALID = "token_invalid"
+    TOKEN_MISSING = "token_missing"
 
-# Event types
-class EventData(TypedDict, total=False):
-    """Event data structure."""
-    event_type: str
-    source: str
-    timestamp: datetime
-    data: Dict[str, Any]
-    metadata: Dict[str, Any]
+class ErrorResponse(BaseModel):
+    """Error response model."""
+    error: str
+    code: ErrorCode
+    message: str
+    request_id: Optional[str] = None
+    details: Dict[str, Any] = {}
+    severity: ErrorSeverity = ErrorSeverity.ERROR
+    recovery_suggestions: List[RecoverySuggestion] = []
+    is_retryable: bool = False
+    retry_after: Optional[int] = None
 
-# Utility types
-class Pagination(TypedDict):
-    """Pagination structure."""
-    page: int
-    per_page: int
-    total: int
-    pages: int
+class JobStatus(str, Enum):
+    """Job status values."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
-class TimeRange(TypedDict):
-    """Time range structure."""
-    start: datetime
-    end: datetime
-    duration: float
+class JobStage(str, Enum):
+    """Job processing stages."""
+    UPLOADING = "uploading"
+    EXTRACTING = "extracting"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
 
-# Transcription types
-class TranscriptionSegment(TypedDict):
-    """Type definition for transcription segment."""
-    start: float
-    end: float
-    text: str
-    speaker: Optional[str]
-    speaker_name: Optional[str]
-    language: Optional[str]
-    confidence: Optional[float]
+class JobProgress(BaseModel):
+    """Job progress information."""
+    stage: JobStage
+    percent: float
+    overall_progress: float
+    completed_stages: List[str] = []
+    estimated_time: Optional[int] = None
+    resource_usage: Optional[Dict[str, float]] = None
 
-class TranscriptionData(TypedDict):
-    """Type definition for transcription data."""
-    segments: List[TranscriptionSegment]
-    metadata: Optional[Dict[str, JSONValue]]
-    duration: Optional[float]
-    language: Optional[str]
-    model: Optional[str]
-    version: Optional[str]
+class JobOptions(BaseModel):
+    """Job processing options."""
+    language: str
+    model: Optional[str] = None
+    vocabulary: Optional[str] = None
+    diarization: bool = False
+    combine_files: bool = False
+    file_pattern: Optional[str] = None
 
-class SpeakerInfo(TypedDict):
-    """Type definition for speaker information."""
-    id: str
+class JobMetrics(BaseModel):
+    """Job performance metrics."""
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    duration: Optional[float] = None
+    cpu_usage: Optional[float] = None
+    memory_usage: Optional[float] = None
+    error_count: int = 0
+    retry_count: int = 0
+
+class JobResult(BaseModel):
+    """Job processing result."""
+    job_id: str
+    status: JobStatus
+    progress: JobProgress
+    options: JobOptions
+    metrics: JobMetrics
+    error: Optional[ErrorResponse] = None
+    output_url: Optional[str] = None
+    is_zip: bool = False
+    sub_jobs: List[str] = []
+
+class FileValidation(BaseModel):
+    """File validation rules."""
+    max_size: int
+    types: List[str]
+    hash_required: bool = True
+    hash_algorithms: List[str] = ["sha256"]
+
+class ValidationRules(BaseModel):
+    """Validation rules for file uploads."""
+    single_file: FileValidation
+    zip_file: FileValidation
+
+class LanguageSupport(BaseModel):
+    """Language support information."""
+    code: str
     name: str
-    language: Optional[str]
-    metadata: Optional[Dict[str, JSONValue]]
+    description: Optional[str] = None
+    models: List[str] = []
+    is_diarization_supported: bool = False
 
-# ZIP handling types
-class ZipProcessingResult(TypedDict):
-    """Type definition for ZIP processing result."""
-    combined_file: str
-    original_files: List[str]
-    is_combined: bool
-    extract_dir: str
-
-# Editor types
-class EditorSegment(TypedDict):
-    """Type definition for editor segment."""
-    start: float
-    end: float
-    text: str
-    speaker: str
-    language: Optional[str]
-    confidence: Optional[float]
-
-class EditorSpeaker(TypedDict):
-    """Type definition for editor speaker."""
-    id: str
-    name: str
-    language: Optional[str]
-    metadata: Optional[Dict[str, JSONValue]]
-
-class EditorData(TypedDict):
-    """Type definition for editor data."""
-    job: Dict[str, Any]
-    transcription: Dict[str, Any]
-    media_url: str
-
-class EditorTemplate(TypedDict):
-    """Type definition for editor template."""
-    html: str
-    js: str
-    css: str
-
-class EditorUpdate(TypedDict):
-    """Type definition for editor update."""
-    status: str
-    transcription: Dict[str, Any]
+class HelpText(BaseModel):
+    """Help text for UI components."""
+    language: str
+    file_types: str
+    vocabulary: str
+    diarization: str
+    time_estimate: str

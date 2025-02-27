@@ -1,254 +1,214 @@
-"""Route utilities for common route handler patterns."""
+"""Route utilities."""
 
-import functools
-from typing import (
-    Type, TypeVar, Any, Dict, Optional, Callable, Awaitable,
-    cast, Union, get_type_hints
-)
+from typing import TypeVar, Generic, Type, List, Dict, Any, Optional, Callable
+from functools import wraps
 from datetime import datetime
-from pydantic import BaseModel, ValidationError as PydanticValidationError
-from fastapi import Response
-from ..utils.logging import log_error, log_info
-from ..utils.exceptions import (
-    ResourceNotFoundError,
-    ValidationError,
-    TranscriboError,
-    RouteError
+from fastapi import Request
+from pydantic import BaseModel
+
+from ..models.api import (
+    ApiResponse,
+    ApiListResponse,
+    ApiErrorResponse,
+    PaginationMetadata,
+    CursorParams
 )
-from ..types import (
-    ErrorContext,
-    Result,
-    RouteHandler,
-    AsyncHandler
-)
-from ..utils.metrics import track_time, DB_OPERATION_DURATION
+from ..utils.api import get_error_code
+from ..constants import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 
 T = TypeVar('T', bound=BaseModel)
-ResponseType = TypeVar('ResponseType', bound=BaseModel)
-HandlerType = TypeVar('HandlerType', bound=RouteHandler)
 
-def map_to_response(
-    model: Any,
-    response_class: Type[ResponseType],
-    **extra_fields: Any
-) -> ResponseType:
-    """Map a model to a response class.
+def create_response(
+    data: Any,
+    response_model: Type[T],
+    request: Request,
+    meta: Dict[str, Any] = None
+) -> ApiResponse[T]:
+    """Create standard API response.
     
     Args:
-        model: The model to map from (can be a dict or any object with dict() method)
-        response_class: The response class to map to
-        **extra_fields: Additional fields to include in the response
+        data: Response data
+        response_model: Response model type
+        request: FastAPI request
+        meta: Optional metadata
         
     Returns:
-        An instance of the response class
+        API response
+    """
+    return ApiResponse(
+        data=map_to_response(data, response_model),
+        meta=meta or {},
+        request_id=getattr(request.state, "request_id", None),
+        timestamp=datetime.utcnow()
+    )
+
+def create_list_response(
+    data: List[Any],
+    response_model: Type[T],
+    request: Request,
+    total: int,
+    limit: int,
+    next_cursor: Optional[str] = None,
+    meta: Dict[str, Any] = None
+) -> ApiListResponse[T]:
+    """Create standard API list response.
+    
+    Args:
+        data: List of response data
+        response_model: Response model type
+        request: FastAPI request
+        total: Total number of items
+        limit: Page size limit
+        next_cursor: Optional next page cursor
+        meta: Optional metadata
+        
+    Returns:
+        API list response
+    """
+    return ApiListResponse(
+        data=[map_to_response(item, response_model) for item in data],
+        pagination=PaginationMetadata(
+            total=total,
+            limit=limit,
+            has_more=next_cursor is not None,
+            next_cursor=next_cursor
+        ),
+        meta=meta or {},
+        request_id=getattr(request.state, "request_id", None),
+        timestamp=datetime.utcnow()
+    )
+
+def create_error_response(
+    request: Request,
+    error: str,
+    status_code: int,
+    details: Dict[str, Any] = None
+) -> ApiErrorResponse:
+    """Create standard API error response.
+    
+    Args:
+        request: FastAPI request
+        error: Error message
+        status_code: HTTP status code
+        details: Optional error details
+        
+    Returns:
+        API error response
+    """
+    return ApiErrorResponse(
+        error=error,
+        code=get_error_code(status_code),
+        details=details,
+        request_id=getattr(request.state, "request_id", None),
+        timestamp=datetime.utcnow()
+    )
+
+def map_to_response(data: Any, response_model: Type[T]) -> T:
+    """Map data to response model.
+    
+    Args:
+        data: Data to map
+        response_model: Response model type
+        
+    Returns:
+        Response model instance
+    """
+    if isinstance(data, dict):
+        return response_model(**data)
+    elif isinstance(data, response_model):
+        return data
+    elif hasattr(data, "to_dict"):
+        return response_model(**data.to_dict())
+    else:
+        raise ValueError(f"Cannot map {type(data)} to {response_model}")
+
+def validate_pagination_params(
+    limit: Optional[int] = None,
+    cursor: Optional[str] = None,
+    sort_field: Optional[str] = None,
+    sort_direction: Optional[str] = None
+) -> CursorParams:
+    """Validate and normalize pagination parameters.
+    
+    Args:
+        limit: Page size limit
+        cursor: Pagination cursor
+        sort_field: Sort field name
+        sort_direction: Sort direction
+        
+    Returns:
+        Normalized cursor parameters
         
     Raises:
-        ValidationError: If mapping fails or validation fails
+        ValueError: If parameters are invalid
     """
-    try:
-        # Convert model to dict if needed
-        model_dict = model.dict() if hasattr(model, 'dict') else model
+    # Validate limit
+    if limit is None:
+        limit = DEFAULT_PAGE_SIZE
+    elif limit <= 0:
+        raise ValueError("Limit must be positive")
+    elif limit > MAX_PAGE_SIZE:
+        limit = MAX_PAGE_SIZE
         
-        # Get response class fields
-        response_fields = get_type_hints(response_class)
+    # Validate sort direction
+    if sort_direction and sort_direction.lower() not in ["asc", "desc"]:
+        raise ValueError("Sort direction must be 'asc' or 'desc'")
         
-        # Filter fields to only include those in the response class
-        filtered_dict = {
-            k: v for k, v in model_dict.items()
-            if k in response_fields
-        }
-        
-        # Add extra fields
-        filtered_dict.update(extra_fields)
-        
-        # Create and validate response instance
-        try:
-            response = response_class(**filtered_dict)
-            response.validate()
-            return response
-        except PydanticValidationError as e:
-            error_context: ErrorContext = {
-                "operation": "validate_response",
-                "timestamp": datetime.utcnow(),
-                "details": {
-                    "error": str(e),
-                    "model": str(model),
-                    "response_class": response_class.__name__
-                }
-            }
-            raise ValidationError("Response validation failed", details=error_context)
-            
-    except Exception as e:
-        error_context: ErrorContext = {
-            "operation": "map_to_response",
-            "timestamp": datetime.utcnow(),
-            "details": {
-                "error": str(e),
-                "model": str(model),
-                "response_class": response_class.__name__
-            }
-        }
-        raise ValidationError("Failed to map response", details=error_context)
+    return CursorParams(
+        cursor=cursor,
+        limit=limit,
+        sort_field=sort_field or "created_at",
+        sort_direction=sort_direction or "desc"
+    )
 
-def handle_exceptions(operation: Optional[str] = None) -> Callable[[HandlerType], HandlerType]:
-    """Decorator to handle exceptions in route handlers.
+def api_route_handler(operation_name: str, response_model: Type[T] = None):
+    """Decorator for API route handlers.
     
     Args:
-        operation: Name of the operation for logging purposes
+        operation_name: Operation name for logging/metrics
+        response_model: Optional response model type
         
     Returns:
-        Decorated function that handles exceptions consistently
-        
-    Example:
-        @handle_exceptions("create_user")
-        async def create_user(user_data: UserCreate) -> UserResponse:
-            ...
+        Route handler decorator
     """
-    def decorator(func: HandlerType) -> HandlerType:
-        @functools.wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+    def decorator(func: Callable):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            request = None
+            for arg in args:
+                if isinstance(arg, Request):
+                    request = arg
+                    break
+            for arg in kwargs.values():
+                if isinstance(arg, Request):
+                    request = arg
+                    break
+                    
             try:
-                return await func(*args, **kwargs)
+                result = await func(*args, **kwargs)
                 
-            except (ResourceNotFoundError, ValidationError, TranscriboError):
-                # Let error middleware handle these
-                raise
-                
-            except Exception as e:
-                error_context: ErrorContext = {
-                    "operation": operation or func.__name__,
-                    "timestamp": datetime.utcnow(),
-                    "details": {
-                        "error": str(e),
-                        "args": str(args),
-                        "kwargs": str(kwargs)
-                    }
-                }
-                log_error(f"Error in {operation or func.__name__}: {str(e)}")
-                raise RouteError(
-                    f"Failed to {operation or func.__name__}",
-                    details=error_context
-                )
-                
-        return cast(HandlerType, wrapper)
-    return decorator
-
-def track_operation(operation: str) -> Callable[[HandlerType], HandlerType]:
-    """Decorator to track operation timing.
-    
-    Args:
-        operation: Name of the operation to track
-        
-    Returns:
-        Decorated function that tracks timing
-        
-    Example:
-        @track_operation("create_user")
-        async def create_user(user_data: UserCreate) -> UserResponse:
-            ...
-    """
-    def decorator(func: HandlerType) -> HandlerType:
-        @functools.wraps(func)
-        @track_time(DB_OPERATION_DURATION, {"operation": operation})
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            return await func(*args, **kwargs)
-        return cast(HandlerType, wrapper)
-    return decorator
-
-def validate_response(
-    response_class: Type[ResponseType]
-) -> Callable[[HandlerType], HandlerType]:
-    """Decorator to validate route handler responses.
-    
-    Args:
-        response_class: Expected response class
-        
-    Returns:
-        Decorated function that validates responses
-        
-    Example:
-        @validate_response(UserResponse)
-        async def get_user(user_id: str) -> UserResponse:
-            ...
-    """
-    def decorator(func: HandlerType) -> HandlerType:
-        @functools.wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            result = await func(*args, **kwargs)
-            
-            # Skip validation for Response objects (e.g. FileResponse)
-            if isinstance(result, Response):
+                if response_model:
+                    if isinstance(result, list):
+                        # Get pagination params from kwargs
+                        limit = kwargs.get("limit", DEFAULT_PAGE_SIZE)
+                        cursor = kwargs.get("cursor")
+                        total = len(result)  # This should come from service layer
+                        
+                        return create_list_response(
+                            result,
+                            response_model,
+                            request,
+                            total=total,
+                            limit=limit,
+                            next_cursor=cursor  # This should come from service layer
+                        )
+                    else:
+                        return create_response(result, response_model, request)
                 return result
                 
-            try:
-                # Handle both single objects and lists
-                if isinstance(result, list):
-                    return [
-                        map_to_response(item, response_class)
-                        if not isinstance(item, response_class)
-                        else item
-                        for item in result
-                    ]
-                else:
-                    return (
-                        map_to_response(result, response_class)
-                        if not isinstance(result, response_class)
-                        else result
-                    )
             except Exception as e:
-                error_context: ErrorContext = {
-                    "operation": "validate_response",
-                    "timestamp": datetime.utcnow(),
-                    "details": {
-                        "error": str(e),
-                        "response_class": response_class.__name__,
-                        "result": str(result)
-                    }
-                }
-                raise ValidationError(
-                    "Response validation failed",
-                    details=error_context
-                )
+                # Let FastAPI exception handlers deal with it
+                raise
                 
-        return cast(HandlerType, wrapper)
-    return decorator
-
-def route_handler(
-    operation: str,
-    response_class: Optional[Type[ResponseType]] = None
-) -> Callable[[HandlerType], HandlerType]:
-    """Combined decorator for common route handler patterns.
-    
-    This decorator combines:
-    - Exception handling
-    - Operation timing tracking
-    - Response validation (if response_class provided)
-    
-    Args:
-        operation: Name of the operation
-        response_class: Optional response class for validation
-        
-    Returns:
-        Decorated function with standard route handler patterns
-        
-    Example:
-        @route_handler("create_user", UserResponse)
-        async def create_user(user_data: UserCreate) -> UserResponse:
-            ...
-    """
-    def decorator(func: HandlerType) -> HandlerType:
-        # Apply decorators in reverse order (inside out)
-        decorated = func
-        
-        # Add response validation if response class provided
-        if response_class is not None:
-            decorated = validate_response(response_class)(decorated)
-            
-        # Add operation tracking
-        decorated = track_operation(operation)(decorated)
-        
-        # Add exception handling
-        decorated = handle_exceptions(operation)(decorated)
-        
-        return cast(HandlerType, decorated)
+        return wrapper
     return decorator

@@ -1,176 +1,392 @@
 """Error handling middleware."""
 
-import traceback
-from datetime import datetime
-from typing import Dict, Any, Optional, cast
+from typing import Dict, Any, Optional, Callable
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
-from ..utils.logging import log_error
-from ..utils.exceptions import (
-    TranscriboError,
-    ValidationError,
-    AuthenticationError,
-    AuthorizationError,
-    ResourceNotFoundError,
-    ConflictError,
-    DependencyError,
-    ServiceError,
-    DatabaseError,
-    StorageError,
-    FileError,
-    EditorError,
-    RouteError,
-    HashVerificationError,
-    ZipError,
-    TranscriptionError,
-    EncryptionError,
-    KeyManagementError,
-    JobError
+from starlette.middleware.base import BaseHTTPMiddleware
+from ..services.error_tracking import ErrorTrackingService
+from ..types import (
+    ErrorCode,
+    ErrorSeverity,
+    EnhancedErrorContext,
+    ErrorResponse,
+    RecoverySuggestion
 )
-from ..types import ErrorContext
-from ..utils.metrics import track_error
+from ..utils.logging import log_error
+from ..utils.exceptions import TranscriboError
 
-async def error_handler(request: Request, call_next) -> Response:
-    """Handle errors in request processing.
+class ErrorHandlerMiddleware(BaseHTTPMiddleware):
+    """Middleware for handling errors and providing enhanced error responses."""
     
-    Args:
-        request: FastAPI request
-        call_next: Next middleware/handler in chain
+    def __init__(
+        self,
+        app: Any,
+        error_tracking_service: ErrorTrackingService,
+        error_handlers: Optional[Dict[str, Callable]] = None
+    ):
+        """Initialize middleware.
         
-    Returns:
-        Response with error details if error occurred
-    """
-    try:
-        return await call_next(request)
-
-    except TranscriboError as e:
-        # Get error context
-        error_context = e.details or {}
+        Args:
+            app: FastAPI application
+            error_tracking_service: Error tracking service instance
+            error_handlers: Optional custom error handlers
+        """
+        super().__init__(app)
+        self.error_tracking = error_tracking_service
+        self.error_handlers = error_handlers or {}
         
-        # Add common fields if not present
-        if "timestamp" not in error_context:
-            error_context["timestamp"] = datetime.utcnow()
-        if "operation" not in error_context:
-            error_context["operation"] = request.url.path
+        # Default error handlers
+        self.default_handlers = {
+            "ValidationError": self._handle_validation_error,
+            "AuthenticationError": self._handle_auth_error,
+            "AuthorizationError": self._handle_auth_error,
+            "ResourceNotFoundError": self._handle_not_found_error,
+            "StorageError": self._handle_storage_error,
+            "TranscriptionError": self._handle_transcription_error,
+            "DatabaseError": self._handle_database_error,
+            "ZipError": self._handle_zip_error
+        }
+    
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable
+    ) -> Response:
+        """Handle request and catch errors.
+        
+        Args:
+            request: FastAPI request
+            call_next: Next middleware/endpoint
             
-        # Add request details
-        error_context["details"] = {
-            **(error_context.get("details", {})),
+        Returns:
+            Response
+        """
+        try:
+            response = await call_next(request)
+            return response
+            
+        except Exception as e:
+            # Get error details
+            error_type = type(e).__name__
+            error_message = str(e)
+            
+            # Get error context
+            error_context = await self._get_error_context(request, e)
+            
+            # Track error
+            await self.error_tracking.track_error(error_context)
+            
+            # Log error
+            log_error(
+                f"{error_type}: {error_message}",
+                error_context.details
+            )
+            
+            # Get error handler
+            handler = self.error_handlers.get(
+                error_type,
+                self.default_handlers.get(
+                    error_type,
+                    self._handle_unknown_error
+                )
+            )
+            
+            # Handle error
+            return await handler(request, e, error_context)
+    
+    async def _get_error_context(
+        self,
+        request: Request,
+        error: Exception
+    ) -> EnhancedErrorContext:
+        """Get enhanced error context.
+        
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            
+        Returns:
+            Enhanced error context
+        """
+        # Get basic error info
+        error_type = type(error).__name__
+        error_message = str(error)
+        
+        # Get request details
+        operation = request.url.path
+        request_id = getattr(request.state, "request_id", None)
+        user_id = getattr(request.state, "user_id", None)
+        
+        # Get error details
+        if isinstance(error, TranscriboError):
+            details = error.details
+            severity = error.severity
+            is_retryable = error.is_retryable
+            retry_after = error.retry_after
+        else:
+            details = {}
+            severity = ErrorSeverity.ERROR
+            is_retryable = False
+            retry_after = None
+        
+        # Add request info to details
+        details["request"] = {
             "method": request.method,
             "url": str(request.url),
-            "client": request.client.host if request.client else None,
-            "user_agent": request.headers.get("user-agent")
+            "headers": dict(request.headers),
+            "client": request.client.host if request.client else None
         }
         
-        # Track error metrics
-        track_error(
-            error_type=e.__class__.__name__,
-            status_code=e.status_code,
-            operation=error_context.get("operation", "unknown")
+        # Get recovery suggestions
+        recovery_suggestions = await self.error_tracking.get_recovery_suggestions(
+            error_type,
+            details
         )
         
-        # Log error with context
-        log_error(
-            f"{e.__class__.__name__}: {e.message}",
-            error_context
+        return EnhancedErrorContext(
+            operation=operation,
+            timestamp=request.state.start_time,
+            severity=severity,
+            resource_id=None,  # Set if applicable
+            user_id=user_id,
+            request_id=request_id,
+            details=details,
+            recovery_suggestions=recovery_suggestions,
+            error_category=error_type,
+            is_retryable=is_retryable,
+            retry_after=retry_after
         )
-        
-        # Return error response
-        return JSONResponse(
-            status_code=e.status_code,
-            content={
-                "error": e.__class__.__name__,
-                "message": e.message,
-                "details": error_context.get("details", {})
-            }
-        )
-
-    except Exception as e:
-        # Create error context for unhandled exceptions
-        error_context: ErrorContext = {
-            "operation": request.url.path,
-            "timestamp": datetime.utcnow(),
-            "details": {
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "method": request.method,
-                "url": str(request.url),
-                "client": request.client.host if request.client else None,
-                "user_agent": request.headers.get("user-agent")
-            }
-        }
-        
-        # Track unhandled error
-        track_error(
-            error_type="UnhandledException",
-            status_code=500,
-            operation=error_context["operation"]
-        )
-        
-        # Log unhandled error
-        log_error(
-            f"Unhandled exception: {str(e)}",
-            error_context
-        )
-        
-        # Return generic error response
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "InternalServerError",
-                "message": "An unexpected error occurred",
-                "details": {
-                    "request_id": request.state.request_id
-                    if hasattr(request.state, "request_id")
-                    else None
-                }
-            }
-        )
-
-def get_error_details(error: Exception) -> Dict[str, Any]:
-    """Get error details for response.
     
-    Args:
-        error: Exception to get details for
+    def _create_error_response(
+        self,
+        error: Exception,
+        context: EnhancedErrorContext,
+        status_code: int = 500
+    ) -> JSONResponse:
+        """Create error response.
         
-    Returns:
-        Dictionary of error details
-    """
-    if isinstance(error, TranscriboError):
-        return {
-            "error": error.__class__.__name__,
-            "message": error.message,
-            "details": error.details.get("details", {})
-            if error.details
-            else {}
-        }
-    else:
-        return {
-            "error": "InternalServerError",
-            "message": "An unexpected error occurred",
-            "details": {}
-        }
-
-def get_error_response(
-    error: Exception,
-    status_code: Optional[int] = None
-) -> JSONResponse:
-    """Get error response.
+        Args:
+            error: Exception instance
+            context: Error context
+            status_code: HTTP status code
+            
+        Returns:
+            JSON response
+        """
+        response = ErrorResponse(
+            error=type(error).__name__,
+            code=getattr(error, "code", ErrorCode.INTERNAL_ERROR),
+            message=str(error),
+            request_id=context.request_id,
+            details=context.details,
+            severity=context.severity,
+            recovery_suggestions=context.recovery_suggestions,
+            is_retryable=context.is_retryable,
+            retry_after=context.retry_after
+        )
+        
+        return JSONResponse(
+            status_code=status_code,
+            content=response.dict(exclude_none=True)
+        )
     
-    Args:
-        error: Exception to create response for
-        status_code: Optional status code override
+    async def _handle_validation_error(
+        self,
+        request: Request,
+        error: Exception,
+        context: EnhancedErrorContext
+    ) -> Response:
+        """Handle validation errors.
         
-    Returns:
-        JSON response with error details
-    """
-    if isinstance(error, TranscriboError):
-        return JSONResponse(
-            status_code=status_code or error.status_code,
-            content=get_error_details(error)
-        )
-    else:
-        return JSONResponse(
-            status_code=status_code or 500,
-            content=get_error_details(error)
-        )
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            context: Error context
+            
+        Returns:
+            Error response
+        """
+        return self._create_error_response(error, context, 400)
+    
+    async def _handle_auth_error(
+        self,
+        request: Request,
+        error: Exception,
+        context: EnhancedErrorContext
+    ) -> Response:
+        """Handle authentication/authorization errors.
+        
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            context: Error context
+            
+        Returns:
+            Error response
+        """
+        status_code = 401 if "Authentication" in type(error).__name__ else 403
+        return self._create_error_response(error, context, status_code)
+    
+    async def _handle_not_found_error(
+        self,
+        request: Request,
+        error: Exception,
+        context: EnhancedErrorContext
+    ) -> Response:
+        """Handle not found errors.
+        
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            context: Error context
+            
+        Returns:
+            Error response
+        """
+        return self._create_error_response(error, context, 404)
+    
+    async def _handle_storage_error(
+        self,
+        request: Request,
+        error: Exception,
+        context: EnhancedErrorContext
+    ) -> Response:
+        """Handle storage errors.
+        
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            context: Error context
+            
+        Returns:
+            Error response
+        """
+        # Add default recovery suggestions
+        context.recovery_suggestions.extend([
+            RecoverySuggestion(
+                action="Check Storage",
+                description="Verify storage service is accessible"
+            ),
+            RecoverySuggestion(
+                action="Check Permissions",
+                description="Verify you have the required permissions"
+            )
+        ])
+        
+        return self._create_error_response(error, context, 500)
+    
+    async def _handle_transcription_error(
+        self,
+        request: Request,
+        error: Exception,
+        context: EnhancedErrorContext
+    ) -> Response:
+        """Handle transcription errors.
+        
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            context: Error context
+            
+        Returns:
+            Error response
+        """
+        # Add default recovery suggestions
+        context.recovery_suggestions.extend([
+            RecoverySuggestion(
+                action="Check Audio",
+                description="Verify audio file is valid and not corrupted"
+            ),
+            RecoverySuggestion(
+                action="Try Different Model",
+                description="Try using a different transcription model"
+            )
+        ])
+        
+        return self._create_error_response(error, context, 500)
+    
+    async def _handle_database_error(
+        self,
+        request: Request,
+        error: Exception,
+        context: EnhancedErrorContext
+    ) -> Response:
+        """Handle database errors.
+        
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            context: Error context
+            
+        Returns:
+            Error response
+        """
+        # Add default recovery suggestions
+        context.recovery_suggestions.extend([
+            RecoverySuggestion(
+                action="Try Again",
+                description="The database may be temporarily unavailable"
+            )
+        ])
+        
+        return self._create_error_response(error, context, 500)
+    
+    async def _handle_zip_error(
+        self,
+        request: Request,
+        error: Exception,
+        context: EnhancedErrorContext
+    ) -> Response:
+        """Handle ZIP file errors.
+        
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            context: Error context
+            
+        Returns:
+            Error response
+        """
+        # Add default recovery suggestions
+        context.recovery_suggestions.extend([
+            RecoverySuggestion(
+                action="Check ZIP File",
+                description="Verify ZIP file is not corrupted"
+            ),
+            RecoverySuggestion(
+                action="Check Contents",
+                description="Verify ZIP contains supported file types"
+            )
+        ])
+        
+        return self._create_error_response(error, context, 400)
+    
+    async def _handle_unknown_error(
+        self,
+        request: Request,
+        error: Exception,
+        context: EnhancedErrorContext
+    ) -> Response:
+        """Handle unknown errors.
+        
+        Args:
+            request: FastAPI request
+            error: Exception instance
+            context: Error context
+            
+        Returns:
+            Error response
+        """
+        # Add default recovery suggestions
+        context.recovery_suggestions.extend([
+            RecoverySuggestion(
+                action="Try Again",
+                description="The error may be temporary"
+            ),
+            RecoverySuggestion(
+                action="Contact Support",
+                description="If the error persists, contact support"
+            )
+        ])
+        
+        return self._create_error_response(error, context, 500)

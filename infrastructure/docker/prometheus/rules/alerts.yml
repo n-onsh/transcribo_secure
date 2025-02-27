@@ -1,0 +1,134 @@
+groups:
+  - name: error_alerts
+    rules:
+      - alert: HighErrorRate
+        expr: sum(increase(transcribo_errors_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 10 errors in 5 minutes"
+          
+      - alert: CriticalErrorRate
+        expr: sum(increase(transcribo_errors_total[5m])) > 50
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical error rate detected"
+          description: "Error rate is above 50 errors in 5 minutes"
+          
+  - name: resource_alerts
+    rules:
+      - alert: HighCpuUsage
+        expr: transcribo_cpu_percent{type="process"} > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is above 80% for 5 minutes"
+          
+      - alert: HighMemoryUsage
+        expr: transcribo_memory_bytes{type="heap"} / transcribo_memory_bytes{type="total"} * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is above 85% for 5 minutes"
+          
+      - alert: HighStorageUsage
+        expr: transcribo_storage_bytes{type="used"} / transcribo_storage_bytes{type="total"} * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High storage usage detected"
+          description: "Storage usage is above 85% for 5 minutes"
+          
+  - name: performance_alerts
+    rules:
+      - alert: SlowOperations
+        expr: histogram_quantile(0.95, sum(rate(transcribo_operation_duration_seconds_bucket[5m])) by (le, operation)) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow operations detected"
+          description: "95th percentile of operation duration is above 5 seconds for 5 minutes"
+          
+      - alert: HighFailureRate
+        expr: sum(transcribo_operation_failures_total{operation=~".*"}) / (sum(transcribo_operation_success_total{operation=~".*"}) + sum(transcribo_operation_failures_total{operation=~".*"})) * 100 > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High failure rate detected"
+          description: "Operation failure rate is above 5% for 5 minutes"
+          
+      - alert: HighQueueLatency
+        expr: histogram_quantile(0.95, sum(rate(transcribo_queue_latency_seconds_bucket[5m])) by (le, queue)) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High queue latency detected"
+          description: "95th percentile of queue latency is above 30 seconds for 5 minutes"
+          
+  - name: system_alerts
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"transcribo.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service is down"
+          description: "{{ $labels.job }} service is down"
+          
+      - alert: HighDatabaseConnections
+        expr: sum(transcribo_db_connections_used) / sum(transcribo_db_connections_total) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High database connection usage"
+          description: "Database connection usage is above 80% for 5 minutes"
+          
+      - alert: SlowDatabaseQueries
+        expr: rate(transcribo_db_query_duration_seconds_sum[5m]) / rate(transcribo_db_query_duration_seconds_count[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow database queries detected"
+          description: "Average database query time is above 1 second for 5 minutes"
+          
+      - alert: LargeQueueSize
+        expr: transcribo_queue_size > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Large queue size detected"
+          description: "Queue {{ $labels.queue }} has more than 100 items for 5 minutes"
+          
+      - alert: HighHttpLatency
+        expr: rate(transcribo_http_response_time_seconds_sum[5m]) / rate(transcribo_http_response_time_seconds_count[5m]) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP latency detected"
+          description: "Average HTTP response time is above 2 seconds for 5 minutes"
+          
+      - alert: HighHttpErrorRate
+        expr: sum(rate(transcribo_http_requests_total{status=~"5.*"}[5m])) / sum(rate(transcribo_http_requests_total[5m])) * 100 > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP error rate detected"
+          description: "HTTP 5xx error rate is above 5% for 5 minutes"
