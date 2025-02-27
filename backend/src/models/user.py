@@ -71,6 +71,7 @@ class User(Base):
     # Relationships
     roles: Mapped[List[Role]] = relationship(secondary=user_roles, back_populates='users')
     scopes: Mapped[List[Scope]] = relationship(secondary=user_scopes, back_populates='users')
+    sessions: Mapped[List["UserSession"]] = relationship("UserSession", back_populates='user', cascade="all, delete-orphan")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert user to dictionary.

@@ -2,7 +2,7 @@
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'transcribo_user') THEN
-    CREATE USER transcribo_user WITH PASSWORD 'transcribo_secure_dev_2024';
+    EXECUTE format('CREATE USER transcribo_user WITH PASSWORD %L', current_setting('app.db_user_password'));
   END IF;
 END
 $$;

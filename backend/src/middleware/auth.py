@@ -34,33 +34,28 @@ class AuthMiddleware:
         """Initialize auth middleware."""
         self.user_service: Optional[UserService] = None
         self.token_validator: Optional[TokenValidator] = None
-        
-        # Get auth mode from configuration
-        self.auth_mode = config.auth.mode
 
     async def initialize(self) -> None:
         """Initialize middleware."""
         try:
-            # Initialize based on auth mode
-            if self.auth_mode == "jwt":
-                # Get user service for JWT auth
-                self.user_service = service_provider.get(UserService)
-                if not self.user_service:
-                    error_context: ErrorContext = {
-                        "operation": "initialize_auth",
-                        "timestamp": datetime.utcnow(),
-                        "details": {"error": "User service unavailable"}
-                    }
-                    raise ConfigurationError(
-                        "User service unavailable",
-                        details=error_context
-                    )
-                await self.user_service.initialize()
-            else:
-                # Initialize token validator for Azure AD
-                self.token_validator = TokenValidator()
+            # Initialize services
+            self.user_service = service_provider.get(UserService)
+            if not self.user_service:
+                error_context: ErrorContext = {
+                    "operation": "initialize_auth",
+                    "timestamp": datetime.utcnow(),
+                    "details": {"error": "User service unavailable"}
+                }
+                raise ConfigurationError(
+                    "User service unavailable",
+                    details=error_context
+                )
+            await self.user_service.initialize()
             
-            log_info(f"Auth middleware initialized in {self.auth_mode} mode")
+            # Initialize token validator for Azure AD token exchange
+            self.token_validator = TokenValidator()
+            
+            log_info("Auth middleware initialized")
 
         except Exception as e:
             error_context = {
@@ -88,7 +83,9 @@ class AuthMiddleware:
             "/metrics",
             "/docs",
             "/redoc",
-            "/openapi.json"
+            "/openapi.json",
+            "/auth/exchange-token",  # Allow token exchange without auth
+            "/auth/refresh"  # Allow token refresh without auth
         ]
         
         for public_path in public_paths:
@@ -116,56 +113,18 @@ class AuthMiddleware:
             
         return parts[1]
 
-    async def _handle_azure_auth(self, token: str) -> Optional[Dict[str, Any]]:
-        """Handle Azure AD authentication.
+    async def _validate_token(self, token: str, request: Request) -> Optional[Dict[str, Any]]:
+        """Validate token and get user info.
         
         Args:
-            token: Azure AD token string
+            token: Access token string
+            request: FastAPI request
             
         Returns:
             User info if token is valid, None otherwise
             
         Raises:
-            AuthenticationError: If authentication fails
-        """
-        if not self.token_validator:
-            log_error("Token validator not initialized")
-            return None
-            
-        try:
-            # Validate token
-            token_data = self.token_validator.validate_token(token)
-            if not token_data:
-                return None
-                
-            # Get user info from token claims
-            user_info = self.token_validator.get_user_info(token_data)
-            
-            # Ensure required fields
-            if not user_info.get("id"):
-                log_error("Missing user ID in token")
-                return None
-                
-            return user_info
-            
-        except AuthenticationError as e:
-            log_error(f"Azure AD authentication error: {str(e)}")
-            raise
-        except Exception as e:
-            log_error(f"Azure AD authentication error: {str(e)}")
-            return None
-
-    async def _handle_jwt_auth(self, token: str) -> Optional[Dict[str, Any]]:
-        """Handle JWT authentication.
-        
-        Args:
-            token: JWT token string
-            
-        Returns:
-            User info if token is valid, None otherwise
-            
-        Raises:
-            AuthenticationError: If authentication fails
+            AuthenticationError: If validation fails
         """
         if not self.user_service:
             log_error("User service not initialized")
@@ -180,10 +139,10 @@ class AuthMiddleware:
             return user.to_dict()
             
         except AuthenticationError as e:
-            log_error(f"JWT authentication error: {str(e)}")
+            log_error(f"Token validation error: {str(e)}")
             raise
         except Exception as e:
-            log_error(f"JWT authentication error: {str(e)}")
+            log_error(f"Token validation error: {str(e)}")
             return None
 
     def _create_auth_context(self, user: Dict[str, Any], request: Request) -> AuthContext:
@@ -207,7 +166,9 @@ class AuthMiddleware:
                 "email": user.get("email")
             },
             "request_id": request.state.request_id if hasattr(request.state, "request_id") else None,
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.utcnow(),
+            "user_agent": request.headers.get("user-agent"),
+            "ip_address": request.client.host if request.client else None
         }
 
     async def __call__(self, request: Request, call_next):
@@ -238,12 +199,8 @@ class AuthMiddleware:
             if not token:
                 raise AuthenticationError("Missing authorization token")
 
-            # Handle authentication based on mode
-            if self.auth_mode == "jwt":
-                user = await self._handle_jwt_auth(token)
-            else:
-                user = await self._handle_azure_auth(token)
-
+            # Validate token and get user info
+            user = await self._validate_token(token, request)
             if not user:
                 raise AuthenticationError("Invalid authorization token")
 

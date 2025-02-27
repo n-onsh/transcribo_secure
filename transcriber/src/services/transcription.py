@@ -7,7 +7,7 @@ import asyncio
 import logging
 import torch
 import torchaudio
-from typing import Dict, Optional, List, BinaryIO
+from typing import Dict, Optional, List, BinaryIO, Tuple
 from contextlib import asynccontextmanager
 from ..utils.logging import log_info, log_error, log_warning
 from ..utils.metrics import (
@@ -177,74 +177,31 @@ class TranscriptionService:
             log_error(f"Error transcribing job {job_id}: {str(e)}")
             raise
 
-    async def validate_audio(self, audio_file: BinaryIO) -> Dict:
-        """Validate an audio file."""
-        try:
-            # Read file into memory buffer
-            buffer = io.BytesIO(audio_file.read())
-            audio_file.seek(0)
-            
-            # Load audio metadata
-            info = torchaudio.info(buffer)
-            
-            # Validate format and properties
-            errors = []
-            
-            if info.sample_rate < 8000:
-                errors.append("Sample rate too low (minimum 8kHz)")
-            
-            if info.num_frames / info.sample_rate > 7200:  # 2 hours
-                errors.append("Audio too long (maximum 2 hours)")
-            
-            if info.num_frames == 0:
-                errors.append("Empty audio file")
-            
-            result = {
-                'is_valid': len(errors) == 0,
-                'errors': errors,
-                'metadata': {
-                    'sample_rate': info.sample_rate,
-                    'num_channels': info.num_channels,
-                    'duration': info.num_frames / info.sample_rate
-                }
-            }
-            
-            if result['is_valid']:
-                log_info("Audio file validation passed")
-            else:
-                log_warning("Audio file validation failed", extra=result)
-            
-            return result
-
-        except Exception as e:
-            log_error(f"Error validating audio file: {str(e)}")
-            raise
-
-    async def get_languages(self) -> List[Dict]:
-        """Get supported languages."""
-        try:
-            languages = [
-                {'code': 'de', 'name': 'German'},
-                {'code': 'en', 'name': 'English'},
-                {'code': 'fr', 'name': 'French'},
-                {'code': 'it', 'name': 'Italian'}
-            ]
-            log_info(f"Listed {len(languages)} supported languages")
-            return languages
-
-        except Exception as e:
-            log_error(f"Error getting supported languages: {str(e)}")
-            raise
-
-    async def _load_model(self):
+    async def _load_model(self) -> Tuple:
         """Load the transcription model."""
         try:
-            # Implementation would load model
-            # For example:
-            # model = whisper.load_model(self.model_path)
-            # model.to(self.device)
-            # return model
-            return None
+            import whisperx
+            from pyannote.audio import Pipeline
+            
+            # Determine compute type based on device
+            compute_type = "float16" if self.device == "cuda" else "float32"
+            
+            # Load the Whisper model
+            model = whisperx.load_model(
+                "large-v3",  # Using Whisper v3 large model
+                self.device,
+                compute_type=compute_type,
+                download_root=self.cache_dir
+            )
+            
+            # Load the diarization model
+            diarize_model = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization",
+                use_auth_token=os.environ.get("HF_AUTH_TOKEN")
+            ).to(torch.device(self.device))
+            
+            log_info(f"Models loaded successfully on {self.device}")
+            return (model, diarize_model)
         except Exception as e:
             log_error(f"Error loading model: {str(e)}")
             raise
@@ -253,11 +210,15 @@ class TranscriptionService:
         """Unload the transcription model."""
         try:
             if self.model:
-                # Implementation would unload model
-                # For example:
-                # del self.model
-                # torch.cuda.empty_cache()
-                pass
+                # Explicitly delete model references
+                self.model = None
+                
+                # Force garbage collection
+                gc.collect()
+                
+                # Clear CUDA cache if available
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         except Exception as e:
             log_error(f"Error unloading model: {str(e)}")
             raise
@@ -272,6 +233,17 @@ class TranscriptionService:
             # Load audio
             waveform, sample_rate = torchaudio.load(buffer)
             
+            # Apply audio filtering (similar to the example's lowpass/highpass)
+            # This is optional but can improve transcription quality
+            if hasattr(torchaudio.transforms, 'Resample'):
+                # Ensure consistent sample rate (16kHz is standard for Whisper)
+                if sample_rate != 16000:
+                    resampler = torchaudio.transforms.Resample(
+                        orig_freq=sample_rate, new_freq=16000
+                    )
+                    waveform = resampler(waveform)
+                    sample_rate = 16000
+            
             # Calculate chunk size in samples
             chunk_samples = self.chunk_size * sample_rate
             
@@ -283,8 +255,8 @@ class TranscriptionService:
                 torchaudio.save(chunk_buffer, chunk, sample_rate, format='wav')
                 chunks.append(chunk_buffer.getvalue())
             
+            log_info(f"Audio split into {len(chunks)} chunks")
             return chunks
-
         except Exception as e:
             log_error(f"Error preparing audio chunks: {str(e)}")
             raise
@@ -293,16 +265,63 @@ class TranscriptionService:
         self,
         audio_data: bytes,
         language: str,
-        vocabulary: Optional[List[str]]
+        vocabulary: Optional[List[str]] = None
     ) -> Dict:
         """Run model inference."""
         try:
-            # Implementation would run inference
-            # For example:
-            # audio = whisper.load_audio(audio_data)
-            # result = self.model.transcribe(audio, language=language)
-            # return result
-            return {}
+            import whisperx
+            import io
+            import numpy as np
+            
+            # Convert bytes to audio array
+            audio_buffer = io.BytesIO(audio_data)
+            audio = whisperx.load_audio(audio_buffer)
+            
+            # Unpack models
+            whisper_model, diarize_model = self.model
+            
+            # Run ASR with Whisper
+            result = whisper_model.transcribe(
+                audio, 
+                batch_size=self.batch_size,
+                language=language
+            )
+            
+            # Align whisper output
+            align_model, metadata = whisperx.load_align_model(
+                language_code=language,
+                device=self.device
+            )
+            result = whisperx.align(
+                result["segments"],
+                align_model,
+                metadata,
+                audio,
+                device=self.device
+            )
+            
+            # Run diarization
+            diarize_segments = diarize_model(audio)
+            
+            # Assign speaker labels
+            result = whisperx.assign_speakers(
+                result["segments"],
+                diarize_segments
+            )
+            
+            # Apply vocabulary if provided
+            if vocabulary and len(vocabulary) > 0:
+                for segment in result["segments"]:
+                    text = segment["text"]
+                    for term in vocabulary:
+                        # Simple case-insensitive replacement
+                        # In a production system, this would use more sophisticated NLP
+                        text = text.replace(term.lower(), term)
+                        text = text.replace(term.upper(), term)
+                        text = text.replace(term.capitalize(), term)
+                    segment["text"] = text
+            
+            return result
         except Exception as e:
             log_error(f"Error running inference: {str(e)}")
             raise
@@ -310,19 +329,42 @@ class TranscriptionService:
     async def _combine_results(self, results: List[Dict]) -> Dict:
         """Combine chunk results."""
         try:
-            # Implementation would combine results
-            # For example:
-            # combined_text = ' '.join(r['text'] for r in results)
-            # combined_segments = []
-            # offset = 0
-            # for r in results:
-            #     for s in r['segments']:
-            #         s['start'] += offset
-            #         s['end'] += offset
-            #         combined_segments.append(s)
-            #     offset = combined_segments[-1]['end']
-            # return {'text': combined_text, 'segments': combined_segments}
-            return {}
+            # Initialize combined result
+            combined_segments = []
+            combined_text = ""
+            
+            # Track time offset for each chunk
+            time_offset = 0.0
+            
+            for result in results:
+                # Skip empty results
+                if not result or "segments" not in result:
+                    continue
+                    
+                # Process segments
+                for segment in result.get("segments", []):
+                    # Adjust timestamps
+                    segment["start"] += time_offset
+                    segment["end"] += time_offset
+                    
+                    # Add to combined segments
+                    combined_segments.append(segment)
+                    
+                    # Add to combined text
+                    if combined_text:
+                        combined_text += " "
+                    combined_text += segment.get("text", "")
+                
+                # Update time offset for next chunk
+                if combined_segments:
+                    time_offset = combined_segments[-1]["end"]
+            
+            # Format the final result
+            return {
+                "text": combined_text,
+                "segments": combined_segments,
+                "language": results[0].get("language") if results else None
+            }
         except Exception as e:
             log_error(f"Error combining results: {str(e)}")
             raise
@@ -330,12 +372,44 @@ class TranscriptionService:
     async def _post_process(self, result: Dict) -> Dict:
         """Post-process transcription result."""
         try:
-            # Implementation would post-process
-            # For example:
-            # - Clean up text
-            # - Normalize timestamps
-            # - Apply vocabulary
-            return result
+            # Format the result for the frontend
+            processed_result = {
+                "text": result.get("text", ""),
+                "segments": [],
+                "speakers": {},
+                "language": result.get("language", "")
+            }
+            
+            # Process segments
+            speaker_map = {}
+            for segment in result.get("segments", []):
+                speaker = segment.get("speaker", "SPEAKER_UNKNOWN")
+                
+                # Track unique speakers
+                if speaker not in speaker_map:
+                    speaker_id = f"S{len(speaker_map) + 1}"
+                    speaker_map[speaker] = speaker_id
+                else:
+                    speaker_id = speaker_map[speaker]
+                
+                # Add to processed segments
+                processed_segment = {
+                    "start": segment.get("start", 0),
+                    "end": segment.get("end", 0),
+                    "text": segment.get("text", ""),
+                    "speaker": speaker_id,
+                    "confidence": segment.get("confidence", 0.0)
+                }
+                processed_result["segments"].append(processed_segment)
+            
+            # Add speaker information
+            for original_id, speaker_id in speaker_map.items():
+                processed_result["speakers"][speaker_id] = {
+                    "id": speaker_id,
+                    "name": f"Speaker {speaker_id.replace('S', '')}"
+                }
+            
+            return processed_result
         except Exception as e:
             log_error(f"Error post-processing result: {str(e)}")
             raise

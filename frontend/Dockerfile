@@ -4,9 +4,8 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Update system packages
 RUN apt-get update && apt-get install -y \
-    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
@@ -32,4 +31,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
 # Run the application
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -38,11 +38,6 @@ class UserInfo(BaseModel):
     scopes: List[str]
     type: str  # 'azure_ad' or 'jwt'
 
-class LoginRequest(BaseModel):
-    """Login request model for JWT auth."""
-    username: str
-    password: str
-
 class TokenResponse(BaseModel):
     """Token response model."""
     access_token: str
@@ -50,10 +45,194 @@ class TokenResponse(BaseModel):
     expires_in: int
     refresh_token: Optional[str] = None
 
+class ExchangeTokenRequest(BaseModel):
+    """Token exchange request model."""
+    azure_token: str
+
+class RefreshTokenRequest(BaseModel):
+    """Token refresh request model."""
+    refresh_token: str
+
+class SessionInfo(BaseModel):
+    """Session info response model."""
+    id: str
+    created_at: str
+    last_used_at: str
+    expires_at: str
+    user_agent: Optional[str]
+    ip_address: Optional[str]
+
 @router.get("/health")
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+@router.post("/exchange-token", response_model=TokenResponse)
+async def exchange_token(request: Request, token_request: ExchangeTokenRequest):
+    """Exchange Azure AD token for session token.
+    
+    Args:
+        request: FastAPI request
+        token_request: Token exchange request
+        
+    Returns:
+        Session token response
+        
+    Raises:
+        HTTPException: If exchange fails
+    """
+    try:
+        # Track operation
+        track_auth_operation('exchange_token')
+
+        user_service = service_provider.get(UserService)
+        if not user_service:
+            raise ConfigurationError("User service unavailable")
+            
+        # Validate Azure token
+        azure_token = token_request.azure_token
+        user = await user_service.validate_token(azure_token)
+        if not user:
+            raise AuthenticationError("Invalid Azure token")
+            
+        # Create session token
+        token = await user_service.create_access_token(
+            user=user,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None
+        )
+        return TokenResponse(**token)
+        
+    except AuthenticationError as e:
+        track_auth_error()
+        log_error(f"Token exchange failed: {str(e)}")
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        track_auth_error()
+        log_error(f"Token exchange error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Token exchange failed"
+        )
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(request: Request, refresh_request: RefreshTokenRequest):
+    """Refresh access token.
+    
+    Args:
+        request: FastAPI request
+        refresh_request: Token refresh request
+        
+    Returns:
+        New token response
+        
+    Raises:
+        HTTPException: If refresh fails
+    """
+    try:
+        # Track operation
+        track_auth_operation('refresh_token')
+
+        user_service = service_provider.get(UserService)
+        if not user_service:
+            raise ConfigurationError("User service unavailable")
+            
+        # Refresh token
+        token = await user_service.refresh_token(
+            refresh_token=refresh_request.refresh_token,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None
+        )
+        if not token:
+            raise AuthenticationError("Invalid refresh token")
+            
+        return TokenResponse(**token)
+        
+    except AuthenticationError as e:
+        track_auth_error()
+        log_error(f"Token refresh failed: {str(e)}")
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        track_auth_error()
+        log_error(f"Token refresh error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Token refresh failed"
+        )
+
+@router.post("/logout")
+async def logout(request: Request):
+    """Logout and invalidate session.
+    
+    Args:
+        request: FastAPI request
+        
+    Returns:
+        Success response
+    """
+    try:
+        # Track operation
+        track_auth_operation('logout')
+
+        user_service = service_provider.get(UserService)
+        if not user_service:
+            raise ConfigurationError("User service unavailable")
+            
+        # Get token from header
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return {"success": True}  # No token to invalidate
+            
+        token = auth_header.split(" ")[1]
+        
+        # Invalidate session
+        await user_service.invalidate_session(token)
+        return {"success": True}
+        
+    except Exception as e:
+        log_error(f"Logout error: {str(e)}")
+        return {"success": True}  # Always return success for logout
+
+@router.get("/sessions", response_model=List[SessionInfo])
+async def get_sessions(request: Request):
+    """Get active sessions for current user.
+    
+    Args:
+        request: FastAPI request
+        
+    Returns:
+        List of active sessions
+        
+    Raises:
+        HTTPException: If session retrieval fails
+    """
+    try:
+        # Track operation
+        track_auth_operation('get_sessions')
+
+        auth_context = request.state.auth
+        if not auth_context:
+            raise AuthenticationError("Authentication required")
+            
+        user_service = service_provider.get(UserService)
+        if not user_service:
+            raise ConfigurationError("User service unavailable")
+            
+        # Get sessions
+        sessions = await user_service.get_active_sessions(auth_context["user"]["id"])
+        return [SessionInfo(**session) for session in sessions]
+        
+    except AuthenticationError as e:
+        track_auth_error()
+        log_error(f"Failed to get sessions: {str(e)}")
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        track_auth_error()
+        log_error(f"Error getting sessions: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to get sessions"
+        )
 
 @router.get("/validate", response_model=UserInfo)
 async def validate_token(request: Request):
@@ -214,64 +393,4 @@ async def check_role(role: str, request: Request):
         raise HTTPException(
             status_code=500,
             detail="Failed to check role"
-        )
-
-# JWT auth endpoints (development only)
-@router.post("/login", response_model=TokenResponse)
-async def login(request: LoginRequest):
-    """Login endpoint for JWT auth (development only).
-    
-    Args:
-        request: Login request
-        
-    Returns:
-        JWT token response
-        
-    Raises:
-        HTTPException: If login fails
-    """
-    if config.auth.mode != "jwt":
-        raise HTTPException(
-            status_code=404,
-            detail="Endpoint not available in current auth mode"
-        )
-        
-    try:
-        # Track operation
-        track_auth_operation('login')
-
-        user_service = service_provider.get(UserService)
-        if not user_service:
-            raise ConfigurationError("User service unavailable")
-            
-        # Get user by username
-        user = await user_service.get_user_by_identity(request.username)
-        if not user:
-            raise AuthenticationError("Invalid credentials")
-            
-        # In development, we accept any password
-        if config.environment != "development":
-            raise HTTPException(
-                status_code=404,
-                detail="Endpoint not available in current environment"
-            )
-            
-        # Create access token
-        token = await user_service.create_access_token(user)
-        return TokenResponse(**token)
-        
-    except AuthenticationError as e:
-        track_auth_error()
-        log_error(f"Login failed: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
-    except ConfigurationError as e:
-        track_auth_error()
-        log_error(f"Login error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception as e:
-        track_auth_error()
-        log_error(f"Login error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail="Login failed"
         )
